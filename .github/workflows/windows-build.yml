@@ -1,0 +1,66 @@
+name: Windows Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      SDK_URL: https://www.foobar2000.org/downloads/SDK-2025-03-07.7z
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install 7-Zip
+        shell: pwsh
+        run: choco install 7zip --no-progress -y
+
+      - name: Download foobar2000 SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:SDK_URL -OutFile sdk.7z
+          7z x sdk.7z -osdkroot -y | Out-Null
+
+      - name: Copy component into SDK tree
+        shell: pwsh
+        run: |
+          $sdk = Get-ChildItem sdkroot -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force "$($sdk.FullName)\foobar2000\foo_sacd_dlna" | Out-Null
+          Copy-Item -Path .\* -Destination "$($sdk.FullName)\foobar2000\foo_sacd_dlna" -Recurse -Force -Exclude .git
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build x64 Release
+        shell: pwsh
+        run: |
+          $sdk = Get-ChildItem sdkroot -Directory | Select-Object -First 1
+          msbuild "$($sdk.FullName)\foobar2000\foo_sacd_dlna\foo_sacd_dlna.sln" /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Run source smoke checks
+        shell: pwsh
+        run: |
+          python -m py_compile .\tools\dlna_smoke_test.py
+
+      - name: Package component
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE 'package'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $dll = Get-ChildItem -Path sdkroot -Recurse -Filter foo_sacd_dlna.dll | Where-Object { $_.FullName -match '\\Release\\' } | Select-Object -First 1
+          if (-not $dll) { throw 'foo_sacd_dlna.dll not found after build' }
+          Copy-Item $dll.FullName (Join-Path $out 'foo_sacd_dlna.dll')
+          Compress-Archive -Path (Join-Path $out '*') -DestinationPath (Join-Path $env:GITHUB_WORKSPACE 'foo_sacd_dlna-build.zip') -Force
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'foo_sacd_dlna-build.zip') (Join-Path $env:GITHUB_WORKSPACE 'foo_sacd_dlna.fb2k-component')
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foo_sacd_dlna-windows-x64
+          path: |
+            foo_sacd_dlna-build.zip
+            foo_sacd_dlna.fb2k-component
+            package/foo_sacd_dlna.dll

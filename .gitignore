@@ -1,0 +1,38 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# Build output
+Debug/
+Release/
+x64/
+Win32/
+ARM64/
+ARM64EC/
+*.obj
+*.pdb
+*.idb
+*.ilk
+*.tlog
+*.lastbuildstate
+*.log
+
+# foobar2000 component output
+*.fb2k-component
+*.dll
+
+# Local cache / temporary media
+foo_sacd_dlna_cache/
+*.dsf.cache
+
+# OS files
+.DS_Store
+Thumbs.db
+
+Release/
+Debug/
+x64/
+.vs/

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{7B8A3A3C-4E4D-42E1-9F9F-57AF9CE6F5D9}</ProjectGuid>
+    <RootNamespace>foo_sacd_dlna</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType><CharacterSet>Unicode</CharacterSet><PlatformToolset>v142</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType><CharacterSet>Unicode</CharacterSet><WholeProgramOptimization>true</WholeProgramOptimization><PlatformToolset>v142</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets" />
+  <PropertyGroup><OutDir>$(SolutionDir)$(Configuration)\</OutDir><IntDir>$(Configuration)\</IntDir><TargetName>foo_sacd_dlna</TargetName></PropertyGroup>
+  <PropertyGroup>
+    <WTLIncludeDir Condition="'$(WTLIncludeDir)'=='' AND '$(WTL_ROOT)'!=''">$(WTL_ROOT)\include</WTLIncludeDir>
+    <WTLIncludeDir Condition="'$(WTLIncludeDir)'==''">$(SolutionDir)..\..\WTL\include</WTLIncludeDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile><Optimization>Disabled</Optimization><RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary><PrecompiledHeader>Use</PrecompiledHeader><PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile><WarningLevel>Level3</WarningLevel><AdditionalIncludeDirectories>$(WTLIncludeDir);..;../..;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><LanguageStandard>stdcpp17</LanguageStandard></ClCompile>
+    <Link><SubSystem>Windows</SubSystem><AdditionalDependencies>$(SolutionDir)..\shared\shared-x64.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile><Optimization>MaxSpeed</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary><PrecompiledHeader>Use</PrecompiledHeader><PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile><WarningLevel>Level3</WarningLevel><AdditionalIncludeDirectories>$(WTLIncludeDir);..;../..;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><LanguageStandard>stdcpp17</LanguageStandard></ClCompile>
+    <Link><SubSystem>Windows</SubSystem><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences><AdditionalDependencies>$(SolutionDir)..\shared\shared-x64.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="PCH.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="initquit.cpp" />
+    <ClCompile Include="contextmenu.cpp" />
+    <ClCompile Include="preferences.cpp" />
+    <ClCompile Include="mainmenu.cpp" />
+    <ClCompile Include="ui_element.cpp" />
+    <ResourceCompile Include="foo_sacd_dlna.rc" />
+    <ClCompile Include="sacd_decode.cpp" />
+    <ClCompile Include="dsf_writer.cpp" />
+    <ClCompile Include="dlna_server.cpp" />
+    <ClCompile Include="config.cpp" />
+    <ClCompile Include="dsp_bridge.cpp" />
+  </ItemGroup>
+  <ItemGroup><ClInclude Include="stdafx.h" /><ClInclude Include="sacd_decode.h" /><ClInclude Include="dsf_writer.h" /><ClInclude Include="dlna_server.h" />
+    <ClInclude Include="config.h" />
+    <ClInclude Include="status.h" />
+    <ClInclude Include="resource.h" /><ClInclude Include="tooltips.h" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\libPPUI\libPPUI.vcxproj"><Project>{7729EB82-4069-4414-964B-AD399091A03F}</Project></ProjectReference>
+    <ProjectReference Include="..\..\pfc\pfc.vcxproj"><Project>{EBFFFB4E-261D-44D3-B89C-957B31A0BF9C}</Project></ProjectReference>
+    <ProjectReference Include="..\foobar2000_component_client\foobar2000_component_client.vcxproj"><Project>{71AD2674-065B-48F5-B8B0-E1F9D3892081}</Project></ProjectReference>
+    <ProjectReference Include="..\helpers\foobar2000_sdk_helpers.vcxproj"><Project>{EE47764E-A202-4F85-A767-ABDAB4AFF35F}</Project></ProjectReference>
+    <ProjectReference Include="..\SDK\foobar2000_SDK.vcxproj"><Project>{E8091321-D79D-4575-86EF-064EA1A4A20D}</Project></ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="HELP.md" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

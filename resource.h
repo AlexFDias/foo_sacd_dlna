@@ -1,0 +1,26 @@
+#pragma once
+#define IDD_SACD_DLNA_PREFERENCES 200
+#define IDC_ENABLE                 2001
+#define IDC_SHARE_LIBRARY          2002
+#define IDC_STATUS_DLNA            2003
+#define IDC_STATUS_SACD            2004
+#define IDC_STATUS_LIBRARY         2005
+#define IDC_SERVER_NAME            2006
+#define IDC_PORT                   2007
+#define IDC_REFRESH_LIBRARY        2008
+#define IDC_OPEN_LIBRARY           2009
+#define IDC_SACD_HELP              2010
+#define IDC_CLEAR_LIBRARY          2011
+#define IDC_STATUS_STREAM          2012
+#define IDC_STATUS_SDX             2013
+#define IDC_STABILITY_MODE         2014
+#define IDC_PREBUFFER_SECONDS      2015
+#define IDC_STATUS_BUFFER          2016
+#define IDC_NETWORK_LOGGING        2017
+#define IDC_CLEAR_CACHE             2018
+#define IDC_DSP_PROCESSOR           2019
+#define IDC_DSP_CONFIGURE           2020
+#define IDC_STATUS_DSP              2021
+#define IDC_DEBUG_DIAGNOSTICS       2022
+#define IDC_NETWORK_PROBE           2023
+#define IDC_STATUS_NETWORK          2024
