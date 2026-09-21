@@ -13,6 +13,7 @@ namespace sacd_dlna_cfg {
     extern const GUID guid_cfg_prebuffer_seconds;
     extern const GUID guid_cfg_network_logging;
     extern const GUID guid_cfg_debug_diagnostics;
+    extern const GUID guid_cfg_shared_formats;
     extern const GUID guid_cfg_dsd_processor_enabled;
     extern const GUID guid_cfg_dsd_processor_preset;
 
@@ -24,6 +25,7 @@ namespace sacd_dlna_cfg {
     extern cfg_uint prebuffer_seconds;
     extern cfg_bool network_logging;
     extern cfg_bool debug_diagnostics;
+    extern cfg_string shared_formats;
     extern cfg_bool dsd_processor_enabled;
     extern cfg_dsp_chain_config dsd_processor_preset;
 }

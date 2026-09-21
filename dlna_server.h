@@ -32,6 +32,12 @@ private:
     SacdDlnaServer(const SacdDlnaServer&) = delete;
     SacdDlnaServer& operator=(const SacdDlnaServer&) = delete;
 
+    struct Playlist {
+        uint32_t id = 0;
+        std::string name;
+        std::vector<uint32_t> itemIds;
+    };
+
     struct Item {
         uint32_t id = 0;
         std::string sourcePath;
@@ -88,9 +94,11 @@ private:
     std::vector<Album> m_albums;
     std::vector<Genre> m_genres;
     std::vector<Folder> m_folders;
+    std::vector<Playlist> m_playlists;
     std::vector<uint32_t> m_albumsByTitle;   // album ids, sorted by title
     std::vector<uint32_t> m_allTrackIds;     // track ids, sorted by title
-    uint32_t m_folderRootId = 0;             // folder shown as "Folders"
+    uint32_t m_folderRootId = 0;
+    uint32_t m_nextPlaylistId = 1;             // folder shown as "Folders"
     // id -> position lookups, rebuilt by publish() (a linear scan per child made large Browse pages O(n^2))
     std::unordered_map<uint32_t, size_t> m_itemIndex, m_artistIndex, m_albumIndex, m_genreIndex, m_folderIndex;
     uint32_t m_nextId = 1;
@@ -200,6 +208,7 @@ private:
     static std::string urlPathDecode(const std::string& s);
     static std::string normalizeKey(const std::string& s);
     static std::string mimeForExtension(const std::string& ext);
+    static bool formatAllowed(const std::string& ext);
     static std::string detectImageMime(const void* data, size_t size);
     static std::string didlProtocolInfo(const std::string& mime);
     static std::string firstXmlTagText(const std::string& xml, const std::string& localName);

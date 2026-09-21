@@ -27,13 +27,15 @@ constexpr const char* kAlbumsObject = "albums";
 constexpr const char* kGenresObject = "genres";
 constexpr const char* kFoldersObject = "folders";
 constexpr const char* kAllTracksObject = "alltracks";
+constexpr const char* kPlaylistsObject = "playlists";
+constexpr const char* kPlaylistPrefix = "playlist-";
 constexpr const char* kGenrePrefix = "genre-";
 constexpr const char* kFolderPrefix = "folder-";
 constexpr size_t kMaxHttpHeader = 128 * 1024;
 constexpr size_t kMaxSoapBody = 2 * 1024 * 1024;
 constexpr uint32_t kCacheFormatVersion = 2;
 constexpr uint32_t kMaxConcurrentStreams = 2;
-constexpr const char* kVersion = "0.8-alpha3-s";
+constexpr const char* kVersion = "0.8-alpha3-t";
 
 std::string lowerCopy(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -1089,7 +1091,35 @@ std::string SacdDlnaServer::normalizeKey(const std::string& s) { return lowerCop
 std::string SacdDlnaServer::mimeForExtension(const std::string& ext) {
     if (!_stricmp(ext.c_str(), ".dsf")) return "audio/x-dsf";
     if (!_stricmp(ext.c_str(), ".dff")) return "audio/x-dff";
-    return "audio/x-dsf";
+    if (!_stricmp(ext.c_str(), ".flac")) return "audio/flac";
+    if (!_stricmp(ext.c_str(), ".wav")) return "audio/wav";
+    if (!_stricmp(ext.c_str(), ".aif") || !_stricmp(ext.c_str(), ".aiff")) return "audio/aiff";
+    if (!_stricmp(ext.c_str(), ".mp3")) return "audio/mpeg";
+    if (!_stricmp(ext.c_str(), ".m4a") || !_stricmp(ext.c_str(), ".mp4")) return "audio/mp4";
+    if (!_stricmp(ext.c_str(), ".ogg")) return "audio/ogg";
+    if (!_stricmp(ext.c_str(), ".opus")) return "audio/opus";
+    if (!_stricmp(ext.c_str(), ".aac")) return "audio/aac";
+    if (!_stricmp(ext.c_str(), ".wv")) return "audio/wavpack";
+    if (!_stricmp(ext.c_str(), ".ape")) return "audio/x-ape";
+    if (!_stricmp(ext.c_str(), ".tta")) return "audio/x-tta";
+    return "application/octet-stream";
+}
+
+
+
+bool SacdDlnaServer::formatAllowed(const std::string& ext) {
+    const std::string needle = lowerCopy(ext.empty() || ext[0] == '.' ? ext : "." + ext);
+    std::string list = lowerCopy(std::string(sacd_dlna_cfg::shared_formats.get()));
+    size_t pos = 0;
+    while (pos < list.size()) {
+        const size_t comma = list.find_first_of(",; ", pos);
+        std::string token = list.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        if (!token.empty() && token[0] != '.') token = "." + token;
+        if (token == needle) return true;
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+    return false;
 }
 
 std::string SacdDlnaServer::detectImageMime(const void* data, size_t size) {
@@ -1299,6 +1329,7 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
     const std::vector<Album>& albums = m_albums;
     const std::vector<Genre>& genres = m_genres;
     const std::vector<Folder>& folders = m_folders;
+    const std::vector<Playlist>& playlists = m_playlists;
     const uint32_t updateId = m_updateId;
 
     numberReturned = totalMatches = 0;
@@ -1313,6 +1344,10 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
     auto findAlbum = [&](uint32_t id) -> const Album* { const auto it = m_albumIndex.find(id); return it == m_albumIndex.end() ? nullptr : &albums[it->second]; };
     auto findGenre = [&](uint32_t id) -> const Genre* { const auto it = m_genreIndex.find(id); return it == m_genreIndex.end() ? nullptr : &genres[it->second]; };
     auto findFolder = [&](uint32_t id) -> const Folder* { const auto it = m_folderIndex.find(id); return it == m_folderIndex.end() ? nullptr : &folders[it->second]; };
+    auto findPlaylist = [&](uint32_t id) -> const Playlist* {
+        for (const auto& p : playlists) if (p.id == id) return &p;
+        return nullptr;
+    };
     auto findItem = [&](uint32_t id) -> const Item* { const auto it = m_itemIndex.find(id); return it == m_itemIndex.end() ? nullptr : &items[it->second]; };
     auto isPrefixed = [](const std::string& id, const char* prefix) { return id.rfind(prefix, 0) == 0; };
     auto parseId = [](const std::string& id, const char* prefix) -> uint32_t {
@@ -1332,7 +1367,7 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
 
     auto appendTrack = [&](const Item& item, const std::string& parentId, const std::string& objectIdForTrack) {
         const std::string title = item.track.title.empty() ? ("Track " + std::to_string(item.id)) : item.track.title;
-        const std::string servedExt = (_stricmp(item.sourceExt.c_str(), ".iso") == 0) ? ".dsf" : item.sourceExt;
+        const std::string servedExt = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) || (_stricmp(item.sourceExt.c_str(), ".iso") == 0) ? ".dsf" : item.sourceExt;
         const std::string defaultMime = mimeForExtension(servedExt);
         const std::string mime = chooseRendererMime(defaultMime);
         out += "<item id=\"" + xmlEscape(objectIdForTrack) + "\" parentID=\"" + xmlEscape(parentId) + "\" restricted=\"1\">";
@@ -1352,6 +1387,10 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
         if (!item.track.publisher.empty()) out += "<dc:publisher>" + xmlEscape(item.track.publisher) + "</dc:publisher>";
         if (!item.track.comment.empty()) out += "<upnp:longDescription>" + xmlEscape(item.track.comment) + "</upnp:longDescription>";
         out += "<upnp:class>object.item.audioItem.musicTrack</upnp:class>";
+        if (item.track.dsdRate || _stricmp(item.sourceExt.c_str(), ".iso") == 0)
+            out += "<dc:format>audio/dsd</dc:format>";
+        else
+            out += "<dc:format>" + xmlEscape(defaultMime) + "</dc:format>";
         if (item.albumId) out += "<upnp:albumArtURI>" + artUri(item.albumId) + "</upnp:albumArtURI>";
 
         std::string res = "<res protocolInfo=\"" + chooseRendererProtocolInfo(mime) + "\"";
@@ -1383,6 +1422,7 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
         { kGenresObject,   "Genres",     "object.container.genre.musicGenre",   genres.size() },
         { kFoldersObject,  "Folders",    "object.container.storageFolder",      rootFolder ? rootFolder->folderIds.size() + rootFolder->itemIds.size() : 0 },
         { kAllTracksObject, "All Tracks", "object.container",                   m_allTrackIds.size() },
+        { kPlaylistsObject, "Playlists", "object.container.playlistContainer",     playlists.size() },
     };
     constexpr size_t kRootEntryCount = sizeof(rootEntries) / sizeof(rootEntries[0]);
     auto findRootEntry = [&](const std::string& id) -> const RootEntry* { for (const auto& e : rootEntries) if (id == e.id) return &e; return nullptr; };
@@ -1391,6 +1431,7 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
     const auto albumContainerId = [&](uint32_t id) { return std::string(kAlbumPrefix) + std::to_string(id); };
     const auto genreContainerId = [&](uint32_t id) { return std::string(kGenrePrefix) + std::to_string(id); };
     const auto folderContainerId = [&](uint32_t id) { return std::string(kFolderPrefix) + std::to_string(id); };
+    const auto playlistContainerId = [&](uint32_t id) { return std::string(kPlaylistPrefix) + std::to_string(id); };
     const auto trackObjectId = [&](uint32_t id) { return std::string(kTrackPrefix) + std::to_string(id); };
     // A folder's parent is the "Folders" root entry when it hangs directly off the (collapsed) root.
     const auto folderParentId = [&](const Folder& f) { return f.parentId == m_folderRootId ? std::string(kFoldersObject) : folderContainerId(f.parentId); };
@@ -1462,6 +1503,11 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
                 appendContainer(objectId, folderParentId(*f), f->name, "object.container.storageFolder", f->folderIds.size() + f->itemIds.size());
                 numberReturned = totalMatches = 1;
             }
+        } else if (isPrefixed(objectId, kPlaylistPrefix)) {
+            if (const Playlist* p = findPlaylist(parseId(objectId, kPlaylistPrefix))) {
+                appendContainer(objectId, kPlaylistsObject, p->name, "object.container.playlistContainer", p->itemIds.size());
+                numberReturned = totalMatches = 1;
+            }
         } else if (isPrefixed(objectId, kTrackPrefix)) {
             if (const Item* i = findItem(parseId(objectId, kTrackPrefix))) {
                 appendTrack(*i, albumContainerId(i->albumId), objectId);
@@ -1512,6 +1558,15 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
         if (const Folder* f = findFolder(parseId(objectId, kFolderPrefix))) emitFolderChildren(*f, objectId);
     } else if (objectId == kAllTracksObject) {
         emitTrackList(m_allTrackIds, objectId);
+    } else if (objectId == kPlaylistsObject) {
+        page(static_cast<unsigned>(playlists.size()), [&](unsigned n) {
+            const Playlist& p = playlists[n];
+            appendContainer(playlistContainerId(p.id), kPlaylistsObject, p.name, "object.container.playlistContainer", p.itemIds.size());
+            return true;
+        });
+    } else if (isPrefixed(objectId, kPlaylistPrefix)) {
+        if (const Playlist* p = findPlaylist(parseId(objectId, kPlaylistPrefix)))
+            emitTrackList(p->itemIds, playlistContainerId(p->id));
     } else if (isPrefixed(objectId, kTrackPrefix)) {
         if (const Item* i = findItem(parseId(objectId, kTrackPrefix))) {
             appendTrack(*i, albumContainerId(i->albumId), objectId);
@@ -2622,7 +2677,7 @@ void SacdDlnaServer::clear_persistent_cache() {
 
 void SacdDlnaServer::clear_shared_library() {
     std::lock_guard<std::mutex> g(m_mutex);
-    m_items.clear(); m_artists.clear(); m_albums.clear(); m_genres.clear(); m_folders.clear();
+    m_items.clear(); m_artists.clear(); m_albums.clear(); m_genres.clear(); m_folders.clear(); m_playlists.clear();
     m_albumsByTitle.clear(); m_allTrackIds.clear(); m_folderRootId = 0;
     m_itemIndex.clear(); m_artistIndex.clear(); m_albumIndex.clear(); m_genreIndex.clear(); m_folderIndex.clear();
     m_sharedCount = 0; m_sharingLibrary = false; ++m_updateId;
@@ -2639,12 +2694,18 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
     for (size_t i = 0; i < items.get_count(); ++i) {
         const auto& handle = items[i]; const char* path = handle->get_path(); if (!path || !*path) continue;
         const char* ext = strrchr(path, '.'); if (!ext) continue;
-        const bool isDsd = !_stricmp(ext, ".iso") || !_stricmp(ext, ".dsf") || !_stricmp(ext, ".dff");
-        const bool isPcm = !_stricmp(ext, ".flac") || !_stricmp(ext, ".wav") || !_stricmp(ext, ".aif") || !_stricmp(ext, ".aiff") ||
-            !_stricmp(ext, ".wv") || !_stricmp(ext, ".tta") || !_stricmp(ext, ".ape") || !_stricmp(ext, ".mp3") ||
-            !_stricmp(ext, ".m4a") || !_stricmp(ext, ".mp4") || !_stricmp(ext, ".ogg") || !_stricmp(ext, ".opus") || !_stricmp(ext, ".aac");
-        if (!isDsd && !(dspEnabled && isPcm)) continue;
-        if (!dspInstalled) continue;
+        const std::string normalizedExt = lowerCopy(ext);
+        const bool isDsd = normalizedExt == ".iso" || normalizedExt == ".dsf" || normalizedExt == ".dff";
+        const bool isSharedFormat = formatAllowed(normalizedExt);
+        if (!isSharedFormat) continue;
+        if (isDsd) {
+            // SACD ISO is indexed as DSD content and is advertised as the generated
+            // DSF resource; the ISO container itself is never sent to the renderer.
+        } else if (dspEnabled) {
+            // Non-DSD formats may be sent natively or passed through DSD Processor,
+            // depending on the configured DSP mode. They are still selectable by filter.
+        }
+        if (!dspInstalled && !isDsd) continue;
         Item x; x.id = m_nextId++; x.sourcePath = path; x.sourceExt = lowerCopy(ext); x.subsong = handle->get_subsong_index(); x.handle = handle;
 
         // File size and timestamp come from foobar2000's metadb cache, so indexing a
@@ -2712,11 +2773,100 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
     m_nextArtistId = nextIds.artist; m_nextAlbumId = nextIds.album; m_nextGenreId = nextIds.genre; m_nextFolderId = nextIds.folder;
     for (size_t i = 0; i < newItems.size(); ++i) { newItems[i].artistId = index.trackArtistId[i]; newItems[i].albumId = index.trackAlbumId[i]; }
 
+    // Snapshot foobar2000 playlists and map their entries to the currently shared
+    // library items. Playlists are exposed as read-only UPnP containers; the renderer
+    // receives the same DSD/native resources as the library tree.
+    std::vector<Playlist> newPlaylists;
+    const auto playlistCount = playlist_manager::get()->get_playlist_count();
+    newPlaylists.reserve(playlistCount);
+    for (t_size pi = 0; pi < playlistCount; ++pi) {
+        metadb_handle_list playlistItems;
+        playlist_manager::get()->playlist_get_all_items(pi, playlistItems);
+
+        // Keep the real foobar2000 playlist name.  In SDK 2025-03-07 the API is
+        // playlist_get_name(), not get_playlist_name().
+        pfc::string8 playlistName;
+        playlist_manager::get()->playlist_get_name(pi, playlistName);
+
+        Playlist pl;
+        pl.id = m_nextPlaylistId++;
+        pl.name = playlistName.is_empty() ? ("Playlist " + std::to_string(static_cast<unsigned>(pi + 1))) : playlistName.c_str();
+
+        // Match playlist entries to the shared library.  A playlist entry is a
+        // metadb_handle, and for multitrack containers (notably SACD ISO) the
+        // subsong is part of the identity.  Some fb2k/library paths can differ in
+        // representation, however, so use several safe fallbacks instead of
+        // silently producing an empty playlist.
+        for (size_t li = 0; li < playlistItems.get_count(); ++li) {
+            const auto& ph = playlistItems[li];
+            if (!ph.is_valid()) continue;
+            const char* ppath = ph->get_path();
+            if (!ppath || !*ppath) continue;
+            const t_uint32 psub = ph->get_subsong_index();
+
+            const Item* match = nullptr;
+
+            // 1) Exact playable location: path + subsong.
+            for (const auto& item : newItems) {
+                if (item.subsong == psub &&
+                    metadb::path_compare(item.sourcePath.c_str(), ppath) == 0) {
+                    match = &item;
+                    break;
+                }
+            }
+
+            // 2) Same path and same title/track number.  This handles cases where
+            // a playlist provider recreates a handle with a different subsong index
+            // while retaining the actual SACD track metadata.
+            if (!match) {
+                pfc::string8 pTitle, pTrackNo;
+                metadb_info_container::ptr pref;
+                if (ph->get_info_ref(pref) && pref.is_valid()) {
+                    const file_info& pinfo = pref->info();
+                    const char* t = pinfo.meta_get("title", 0);
+                    const char* n = pinfo.meta_get("tracknumber", 0);
+                    if (t) pTitle = t;
+                    if (n) pTrackNo = n;
+                }
+                if (!pTitle.is_empty() || !pTrackNo.is_empty()) {
+                    for (const auto& item : newItems) {
+                        if (metadb::path_compare(item.sourcePath.c_str(), ppath) != 0) continue;
+                        const bool titleOK = pTitle.is_empty() ||
+                            stricmp_utf8(item.track.title.c_str(), pTitle.c_str()) == 0;
+                        const bool trackOK = pTrackNo.is_empty() ||
+                            stricmp_utf8(item.track.trackNumber.c_str(), pTrackNo.c_str()) == 0;
+                        if (titleOK && trackOK) { match = &item; break; }
+                    }
+                }
+            }
+
+            // 3) Last safe fallback: if the path exists only once in the shared
+            // library, use that item even if the playlist subsong metadata is stale.
+            if (!match) {
+                const Item* only = nullptr;
+                bool multiple = false;
+                for (const auto& item : newItems) {
+                    if (metadb::path_compare(item.sourcePath.c_str(), ppath) != 0) continue;
+                    if (only) { multiple = true; break; }
+                    only = &item;
+                }
+                if (only && !multiple) match = only;
+            }
+
+            if (match) pl.itemIds.push_back(match->id);
+        }
+
+        // Expose every playlist, even when none of its entries pass the current
+        // Shared Formats filter. This makes the playlist visible in UPnP; entries
+        // that are not shared are simply omitted from that playlist.
+        newPlaylists.push_back(std::move(pl));
+    }
+
     {
         std::lock_guard<std::mutex> g(m_mutex);
         m_items = std::move(newItems);
         m_artists = std::move(index.artists); m_albums = std::move(index.albums);
-        m_genres = std::move(index.genres); m_folders = std::move(index.folders);
+        m_genres = std::move(index.genres); m_folders = std::move(index.folders); m_playlists = std::move(newPlaylists);
         m_albumsByTitle = std::move(index.albumsByTitle); m_allTrackIds = std::move(index.allTracks);
         m_folderRootId = index.folderRoot;
         m_artistIndex = std::move(index.artistIndex); m_albumIndex = std::move(index.albumIndex);
@@ -2745,11 +2895,8 @@ void SacdDlnaServer::share_music_library() {
     metadb_handle_list dsd;
     for (size_t i = 0; i < all.get_count(); ++i) {
         const char* path = all[i]->get_path(); if (!path) continue; const char* ext = strrchr(path, '.'); if (!ext) continue;
-        const bool isDsd = !_stricmp(ext, ".iso") || !_stricmp(ext, ".dsf") || !_stricmp(ext, ".dff");
-        const bool isPcm = !_stricmp(ext, ".flac") || !_stricmp(ext, ".wav") || !_stricmp(ext, ".aif") || !_stricmp(ext, ".aiff") ||
-            !_stricmp(ext, ".wv") || !_stricmp(ext, ".tta") || !_stricmp(ext, ".ape") || !_stricmp(ext, ".mp3") ||
-            !_stricmp(ext, ".m4a") || !_stricmp(ext, ".mp4") || !_stricmp(ext, ".ogg") || !_stricmp(ext, ".opus") || !_stricmp(ext, ".aac");
-        if (isDsd || (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) && isPcm)) dsd += all[i];
+        const std::string normalizedExt = lowerCopy(ext);
+        if (formatAllowed(normalizedExt)) dsd += all[i];
     }
     publish(dsd); m_sharingLibrary = true;
     console::printf("SACD DLNA: Music Library SHARING / %u DSD tracks", static_cast<unsigned>(m_sharedCount.load()));

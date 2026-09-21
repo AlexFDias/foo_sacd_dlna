@@ -428,3 +428,12 @@ Executar uma vez após mudar o nome/localização da pasta WTL:
 ```powershell
 .\tools\apply_sdk_wtl_patch.ps1 -SdkRoot 'D:\SDK-2025-03-07'
 ```
+
+
+## Atualização alpha3-t
+
+- SACD ISO é apresentado na árvore DLNA como **DSD** e o recurso anunciado ao renderer é `.dsf`; o ISO nunca é enviado diretamente.
+- A partilha passou a aceitar um filtro de formatos configurável em `Shared formats` (por exemplo `dsf,dff,iso,flac,wav,mp3`).
+- Quando o DSD Processor está desligado, formatos não-DSD selecionados são enviados no formato nativo.
+- Quando o DSD Processor está ligado, os formatos selecionados podem ser convertidos para DSD/DSF para o caminho DLNA.
+- A árvore ContentDirectory passou a publicar **Playlists** e os itens das playlists, permitindo ao renderer navegar pelas listas do foobar2000.

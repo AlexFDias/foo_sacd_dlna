@@ -12,6 +12,7 @@ class preferences_impl : public CDialogImpl<preferences_impl>, public preference
 public:
     enum { IDD = IDD_SACD_DLNA_PREFERENCES };
     preferences_impl(preferences_page_callback::ptr callback) : m_callback(callback) {}
+    ~preferences_impl() { if (::IsWindow(m_hWnd)) ::KillTimer(m_hWnd, 1); m_hWnd = nullptr; }
 
     BEGIN_MSG_MAP_EX(preferences_impl)
         MSG_WM_INITDIALOG(OnInitDialog)
@@ -19,6 +20,7 @@ public:
         COMMAND_HANDLER_EX(IDC_SHARE_LIBRARY, BN_CLICKED, OnChangedCommand)
         COMMAND_HANDLER_EX(IDC_SERVER_NAME, EN_CHANGE, OnChangedCommand)
         COMMAND_HANDLER_EX(IDC_PORT, EN_CHANGE, OnChangedCommand)
+        COMMAND_HANDLER_EX(IDC_SHARED_FORMATS, EN_CHANGE, OnChangedCommand)
         COMMAND_HANDLER_EX(IDC_STABILITY_MODE, BN_CLICKED, OnChangedCommand)
         COMMAND_HANDLER_EX(IDC_PREBUFFER_SECONDS, EN_CHANGE, OnChangedCommand)
         COMMAND_HANDLER_EX(IDC_NETWORK_LOGGING, BN_CLICKED, OnChangedCommand)
@@ -32,6 +34,7 @@ public:
         COMMAND_HANDLER_EX(IDC_CLEAR_CACHE, BN_CLICKED, OnClearCache)
         COMMAND_HANDLER_EX(IDC_SACD_HELP, BN_CLICKED, OnHelp)
         MSG_WM_TIMER(OnTimer)
+        MESSAGE_HANDLER(WM_NCDESTROY, OnNcDestroy)
     END_MSG_MAP()
 
     t_uint32 get_state() override {
@@ -45,6 +48,7 @@ public:
         CheckDlgButton(IDC_SHARE_LIBRARY, sacd_dlna_cfg::share_library ? BST_CHECKED : BST_UNCHECKED);
         ::SetDlgItemTextA(m_hWnd, IDC_SERVER_NAME, sacd_dlna_cfg::server_name.get().c_str());
         SetDlgItemInt(IDC_PORT, static_cast<UINT>(sacd_dlna_cfg::port.get()), FALSE);
+        ::SetDlgItemTextA(m_hWnd, IDC_SHARED_FORMATS, sacd_dlna_cfg::shared_formats.get().c_str());
         CheckDlgButton(IDC_STABILITY_MODE, sacd_dlna_cfg::stability_mode ? BST_CHECKED : BST_UNCHECKED);
         SetDlgItemInt(IDC_PREBUFFER_SECONDS, static_cast<UINT>(sacd_dlna_cfg::prebuffer_seconds.get()), FALSE);
         CheckDlgButton(IDC_NETWORK_LOGGING, sacd_dlna_cfg::network_logging ? BST_CHECKED : BST_UNCHECKED);
@@ -58,6 +62,7 @@ public:
         sacd_dlna_cfg::share_library = IsDlgButtonChecked(IDC_SHARE_LIBRARY) == BST_CHECKED;
         char name[256]{}; ::GetDlgItemTextA(m_hWnd, IDC_SERVER_NAME, name, static_cast<int>(sizeof(name))); sacd_dlna_cfg::server_name = name;
         BOOL ok = FALSE; const UINT p = ::GetDlgItemInt(m_hWnd, IDC_PORT, &ok, FALSE); if (ok) sacd_dlna_cfg::port = std::clamp<UINT>(p, 1024, 65535);
+        char formats[1024]{}; ::GetDlgItemTextA(m_hWnd, IDC_SHARED_FORMATS, formats, static_cast<int>(sizeof(formats))); sacd_dlna_cfg::shared_formats = formats;
         sacd_dlna_cfg::stability_mode = IsDlgButtonChecked(IDC_STABILITY_MODE) == BST_CHECKED;
         BOOL bok = FALSE; const UINT b = ::GetDlgItemInt(m_hWnd, IDC_PREBUFFER_SECONDS, &bok, FALSE); if (bok) sacd_dlna_cfg::prebuffer_seconds = std::clamp<UINT>(b, 5, 60);
         sacd_dlna_cfg::network_logging = IsDlgButtonChecked(IDC_NETWORK_LOGGING) == BST_CHECKED;
@@ -97,6 +102,7 @@ private:
         m_tips.add(*this, IDC_SHARE_LIBRARY, "Shares DSD-capable items from foobar2000 Media Library as Artist > Album > Track. Files are not moved.");
         m_tips.add(*this, IDC_SERVER_NAME, "Friendly name visible to UPnP/DLNA players. Example: foobar2000 SACD DSD.");
         m_tips.add(*this, IDC_PORT, "TCP port used for UPnP XML and audio HTTP delivery. Default is 8192.");
+        m_tips.add(*this, IDC_SHARED_FORMATS, "Comma/space separated extension filter for shared content. ISO is advertised to renderers as native DSD/DSF; add formats such as flac,wav,mp3 to publish them too. With DSD Processor disabled, non-DSD files are sent in their native format; with it enabled they can be processed to DSD.");
         m_tips.add(*this, IDC_STABILITY_MODE, "Separates SACD-to-DSD preparation from network delivery. Helps absorb short disk/network fluctuations without converting DSD to PCM.");
         m_tips.add(*this, IDC_PREBUFFER_SECONDS, "Read-ahead target in seconds. 15 s is the default; for DSD256 this is about 42.3 MB of raw stereo DSD.");
         m_tips.add(*this, IDC_NETWORK_LOGGING, "Writes SSDP, HTTP, renderer negotiation, cache and transfer diagnostics to the foobar2000 console. Keep off for normal use.");
@@ -126,6 +132,7 @@ private:
             (IsDlgButtonChecked(IDC_SHARE_LIBRARY) == BST_CHECKED) != static_cast<bool>(sacd_dlna_cfg::share_library) ||
             strcmp(name, sacd_dlna_cfg::server_name.get()) != 0 ||
             (ok && p != static_cast<UINT>(sacd_dlna_cfg::port.get())) ||
+            [&]() { char formats[1024]{}; ::GetDlgItemTextA(m_hWnd, IDC_SHARED_FORMATS, formats, static_cast<int>(sizeof(formats))); return strcmp(formats, sacd_dlna_cfg::shared_formats.get()) != 0; }() ||
             (IsDlgButtonChecked(IDC_STABILITY_MODE) == BST_CHECKED) != static_cast<bool>(sacd_dlna_cfg::stability_mode) ||
             (bok && b != static_cast<UINT>(sacd_dlna_cfg::prebuffer_seconds.get())) ||
             (IsDlgButtonChecked(IDC_NETWORK_LOGGING) == BST_CHECKED) != static_cast<bool>(sacd_dlna_cfg::network_logging) ||
@@ -133,13 +140,21 @@ private:
             (IsDlgButtonChecked(IDC_DSP_PROCESSOR) == BST_CHECKED) != static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled);
     }
 
-    void OnTimer(UINT_PTR) { UpdateStatus(); }
+    LRESULT OnNcDestroy(UINT, WPARAM, LPARAM, BOOL& bHandled) {
+        if (m_hWnd) ::KillTimer(m_hWnd, 1);
+        m_hWnd = nullptr;
+        bHandled = FALSE;
+        return 0;
+    }
+
+    void OnTimer(UINT_PTR) { if (::IsWindow(m_hWnd)) UpdateStatus(); }
 
     void OnChangedCommand(UINT, int, CWindow) { UpdateStatus(); OnChanged(); }
 
     void OnChanged() { m_callback->on_state_changed(); }
 
     void UpdateStatus() {
+        if (!::IsWindow(m_hWnd)) return;
         const auto st = SacdDlnaServer::instance().get_status();
 
         std::string line1 = std::string("DLNA: ") + (st.broadcasting ? "BROADCASTING / ACTIVE" : "STOPPED");
@@ -150,7 +165,7 @@ private:
         if (st.sacdInstalled && !st.sacdVersion.is_empty()) { line2 += " ("; line2 += st.sacdVersion; line2 += ")"; }
         ::SetDlgItemTextA(m_hWnd, IDC_STATUS_SACD, line2.c_str());
 
-        std::string line3 = "Music Library: " + std::string(st.sharingLibrary ? "SHARING" : "NOT SHARING") + " (" + std::to_string(st.sharedCount) + " DSD tracks)";
+        std::string line3 = "Music Library: " + std::string(st.sharingLibrary ? "SHARING" : "NOT SHARING") + " (" + std::to_string(st.sharedCount) + " tracks)";
         ::SetDlgItemTextA(m_hWnd, IDC_STATUS_LIBRARY, line3.c_str());
 
         const double mbps = static_cast<double>(st.bytesPerSecond) * 8.0 / 1000000.0;

@@ -2,7 +2,7 @@
 #include "winres.h"
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
-IDD_SACD_DLNA_PREFERENCES DIALOGEX 0, 0, 390, 440
+IDD_SACD_DLNA_PREFERENCES DIALOGEX 0, 0, 390, 470
 STYLE DS_SETFONT | WS_CHILD
 FONT 9, "Segoe UI", 400, 0, 0x0
 BEGIN
@@ -26,20 +26,23 @@ BEGIN
     EDITTEXT        IDC_SERVER_NAME, 100, 230, 265, 14, ES_AUTOHSCROLL
     LTEXT           "HTTP port:", IDC_STATIC, 14, 254, 80, 10
     EDITTEXT        IDC_PORT, 100, 251, 70, 14, ES_NUMBER
+    LTEXT           "Shared formats:", IDC_STATIC, 14, 273, 80, 10
+    EDITTEXT        IDC_SHARED_FORMATS, 100, 270, 265, 14, ES_AUTOHSCROLL
+    LTEXT           "e.g. dsf,dff,iso,flac,wav,mp3", IDC_STATIC, 100, 286, 265, 10
 
-    GROUPBOX        "Stability / diagnostics", IDC_STATIC, 10, 275, 370, 66
+    GROUPBOX        "Stability / diagnostics", IDC_STATIC, 10, 300, 370, 66
     AUTOCHECKBOX    "Enable stability mode", IDC_STABILITY_MODE, 18, 289, 150, 14
-    LTEXT           "Pre-buffer (seconds):", IDC_STATIC, 185, 291, 100, 10
-    EDITTEXT        IDC_PREBUFFER_SECONDS, 288, 288, 55, 14, ES_NUMBER
-    AUTOCHECKBOX    "Verbose network logging", IDC_NETWORK_LOGGING, 18, 309, 170, 14
-    AUTOCHECKBOX    "Enable debug diagnostics", IDC_DEBUG_DIAGNOSTICS, 18, 327, 170, 14
-    PUSHBUTTON      "Run Network Probe", IDC_NETWORK_PROBE, 205, 325, 105, 16
+    LTEXT           "Pre-buffer (seconds):", IDC_STATIC, 185, 316, 100, 10
+    EDITTEXT        IDC_PREBUFFER_SECONDS, 288, 313, 55, 14, ES_NUMBER
+    AUTOCHECKBOX    "Verbose network logging", IDC_NETWORK_LOGGING, 18, 334, 170, 14
+    AUTOCHECKBOX    "Enable debug diagnostics", IDC_DEBUG_DIAGNOSTICS, 18, 352, 170, 14
+    PUSHBUTTON      "Run Network Probe", IDC_NETWORK_PROBE, 205, 350, 105, 16
 
-    PUSHBUTTON      "Refresh Library", IDC_REFRESH_LIBRARY, 14, 348, 82, 16
-    PUSHBUTTON      "Open Music Library", IDC_OPEN_LIBRARY, 100, 348, 100, 16
-    PUSHBUTTON      "Clear Shared Library", IDC_CLEAR_LIBRARY, 206, 348, 88, 16
-    PUSHBUTTON      "Clear DSF Cache", IDC_CLEAR_CACHE, 14, 372, 100, 16
-    AUTOCHECKBOX    "Process DLNA audio through DSD Processor", IDC_DSP_PROCESSOR, 14, 394, 235, 14
-    PUSHBUTTON      "Configure DSD Processor...", IDC_DSP_CONFIGURE, 252, 392, 113, 18
-    PUSHBUTTON      "Help", IDC_SACD_HELP, 318, 418, 45, 16
+    PUSHBUTTON      "Refresh Library", IDC_REFRESH_LIBRARY, 14, 373, 82, 16
+    PUSHBUTTON      "Open Music Library", IDC_OPEN_LIBRARY, 100, 373, 100, 16
+    PUSHBUTTON      "Clear Shared Library", IDC_CLEAR_LIBRARY, 206, 373, 88, 16
+    PUSHBUTTON      "Clear DSF Cache", IDC_CLEAR_CACHE, 14, 397, 100, 16
+    AUTOCHECKBOX    "Process DLNA audio through DSD Processor", IDC_DSP_PROCESSOR, 14, 419, 235, 14
+    PUSHBUTTON      "Configure DSD Processor...", IDC_DSP_CONFIGURE, 252, 417, 113, 18
+    PUSHBUTTON      "Help", IDC_SACD_HELP, 318, 445, 45, 16
 END

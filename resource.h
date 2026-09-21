@@ -24,3 +24,5 @@
 #define IDC_DEBUG_DIAGNOSTICS       2022
 #define IDC_NETWORK_PROBE           2023
 #define IDC_STATUS_NETWORK          2024
+
+#define IDC_SHARED_FORMATS         2025
