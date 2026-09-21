@@ -1,0 +1,2059 @@
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md	2026-09-20 15:31:58.000000000 +0000
++++ b/CHANGELOG.md	2026-09-21 10:24:25.475125099 +0000
+@@ -1,3 +1,40 @@
++# Alpha 3 T — bug-fix and performance pass (proposed)
++
++Applied on top of Alpha 3 S. See `CODE_AUDIT_0.8_ALPHA3_T.md`.
++
++**New: complete browse tree**
++- The root used to expose only `Artists`. It now exposes `Artists`, `Albums`, `Genres`, `Folders` and `All Tracks`:
++  `Artists -> artist -> album -> tracks`, `Albums -> album -> tracks` (album artist shown as `dc:creator`), `Genres -> genre -> tracks`,
++  `Folders -> folder -> (sub-folders and tracks)` mirroring the file system (single-child chains such as `D:\Music\DSD` are skipped),
++  `All Tracks` sorted by title. Grouping, sorting and object ids live in the new `library_index.h`.
++- ContentDirectory: `GetSearchCapabilities` and `GetSortCapabilities` are declared in the SCPD and answered (empty lists). Before, every
++  request that was not `GetSystemUpdateID` was answered as a `Browse`, so control points calling these mandatory actions received a
++  `BrowseResponse` and many gave up. Unknown actions now get UPnP error 401 instead of a Browse.
++
++**Correctness**
++- foobar2000 paths (`file://D:\Music\a.dsf`, and `core_api::get_profile_path()`) are converted to native Windows paths with the SDK's `foobar2000_io::extract_native_path` before any disk access. Previously the cache folder, `network.log`, native DSF/DFF streaming and the artwork cache were handed a `file://...` string.
++- DoP -> DSF: bytes are written in time order (older byte first) and every byte is bit-reversed, as required by a DSF declaring "bits per sample = 1" (LSB first). The previous order scrambled the noise-shaped quantisation noise: in-band SNR of a decoded test signal dropped by 29-44 dB.
++- DSF: the last partial block of each channel is zero-padded to a full 4096-byte block, as the format requires; write failures are detected instead of producing a silently truncated file.
++- `serveMedia()` always returns `true` once response headers are sent, so `handleClient` no longer appends a `404` to a half-sent audio stream.
++- Browse: `StartingIndex + RequestedCount` can no longer wrap around 32 bits (some renderers send `0xFFFFFFFF`).
++- Help dialog showed literal `\n` sequences.
++
++**Performance**
++- `publish()` reads tags and file statistics from the metadb cache (`get_info_ref`, `get_filestats`) instead of opening and `stat`-ing every file on the main thread; grouping and sorting use hash lookups (the old code was O(items x albums) and O(items^2) in the sorts).
++- Browse builds its response from the shared library under the lock instead of copying every item/artist/album per request; `BrowseResponse` reads `UpdateID` directly instead of building a full status snapshot.
++- Component probes (`sacd_plugin_installed`, `dsd_processor_installed`) are cached after start-up, the library callback no longer builds a status snapshot per event, and DoP unpacking converts a whole chunk per call instead of one call per sample.
++- Finished HTTP client and prefetch `std::thread` objects are joined and released instead of accumulating until the server stops.
++
++**Behaviour change**
++- Albums are grouped under the album artist when tagged (falling back to the track artist), so a compilation is no longer split into one pseudo-album per track artist. Tracks inside an album are ordered by disc, track number, title.
++
++**Tests**
++- `tests/dsf_dop_selftest/`: bit-exact + `ffmpeg` decode validation of the DoP -> DSF path using the plugin's own code.
++- `tests/library_index_selftest/`: unit test of the artist/album/genre/folder index (74 checks).
++- `tests/browse_tree_selftest/`: compiles the plugin's real `browseDidl()` and `soapActionName()` and crawls the whole tree like a renderer (16,000+ checks: well-formed DIDL-Lite, `childCount` == `TotalMatches`, `parentID` links, paging, every view reaches every track).
++
++**Build status:** not compiled here (no MSVC). Every SDK symbol used by the new code was checked against `SDK-2025-03-07`; a Windows/MSVC v142 rebuild is required.
++
+ # Alpha 3 M — code hardening
+ 
+ Alpha 3 M source-level hardening:
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/CODE_AUDIT_0.8_ALPHA3_T.md b/CODE_AUDIT_0.8_ALPHA3_T.md
+--- a/CODE_AUDIT_0.8_ALPHA3_T.md	1970-01-01 00:00:00.000000000 +0000
++++ b/CODE_AUDIT_0.8_ALPHA3_T.md	2026-09-21 10:24:25.475415552 +0000
+@@ -0,0 +1,34 @@
++# Code audit — foo_sacd_dlna 0.8 Alpha 3 T
++
++Review of Alpha 3 S against the foobar2000 SDK 2025-03-07 sources.
++
++## Findings that were verified against the SDK
++
++| # | Finding | Evidence |
++|---|---------|----------|
++| 1 | Local files and the profile directory are `file://...` URLs, but were passed straight to `CreateDirectoryW`, `std::ifstream` and `std::filesystem` | `core_api.h` documents `get_profile_path()` as `file://c:\...`; `filesystem.cpp: extract_native_path()` strips the prefix |
++| 2 | DoP -> DSF wrote the two bytes of each DoP word in reverse time order and did not reverse the bits | Test: DSD64 tone -> DoP -> plugin code -> DSF -> `ffmpeg`; SNR 25 dB (old) vs 54-69 dB (fixed); fixed output is bit-exact |
++| 3 | DSF final block not padded to 4096 bytes per channel | DSF specification; `tests/dsf_dop_selftest` |
++| 4 | `publish()` opened every track and used linear searches inside sort comparators, on the main thread | code; SDK offers `metadb_handle::get_info_ref()` / `get_filestats()` |
++| 5 | `serveMedia()` returned `false` after an early-ended stream, making `handleClient` append a `404` | code |
++
++| 6 | Root exposed only `Artists`; no Albums, Genres, Folders or All Tracks view | `browseDidl()` root branch |
++| 7 | Every ContentDirectory request other than `GetSystemUpdateID` was answered as a `Browse`; `GetSearchCapabilities`/`GetSortCapabilities` (mandatory in ContentDirectory:1) were neither declared nor answered | dispatch in `handleClient`; SCPD |
++
++## Checked and found correct (no change)
++
++- `toInt24()` passes `scale = 1.0` to `audio_math::convert_to_int24`, which multiplies by `0x800000` internally (`pfc/audio_math.cpp`).
++- `input_flag_dop` exists in `input.h` (`1 << 6`).
++
++## Not changed, still open
++
++- **Library sharing is off by default.** `cfg_bool share_library` defaults to `false`; until "Share Music Library" is enabled once (it is then
++  remembered and re-applied at start-up) the server has no tracks and every container is empty. Only tracks in the foobar2000 **Media Library**
++  are shared (`library_manager::get_all_items`), not playlist-only files.
++
++- A `HEAD` request for a SACD ISO or DSP-processed item still blocks until the whole conversion is cached. A DSF's size is computable from duration and DSD rate, so `HEAD` could answer without converting.
++- The concurrent-stream limit is checked before conversion but counted in `updateStreamStart()`; requests waiting on the same conversion can briefly exceed it.
++- The "server buffer" figure is a byte counter, not an actual read-ahead thread.
++- `ConnectionManager` answers every POST with the same `GetProtocolInfoResponse`.
++- `publish()` still runs on the main thread (now without disk I/O in the normal case).
++- Everything from the Alpha 3 M "Remaining observations" list.
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/config.cpp b/config.cpp
+--- a/config.cpp	2026-09-20 15:12:36.000000000 +0000
++++ b/config.cpp	2026-09-20 17:24:40.236483243 +0000
+@@ -30,7 +30,28 @@
+     return "foo_input_sacd.dll (Super Audio CD Decoder)";
+ }
+ 
+-bool sacd_plugin_installed(pfc::string_base* versionOut) {
++namespace {
++// get_status() runs several times a second (status UI, /status page). Enumerating every
++// installed component's service on each call is wasteful, and the answer cannot change
++// while foobar2000 is running, so it is cached once start-up has finished.
++struct ComponentProbe {
++    std::mutex m;
++    bool cached = false;
++    bool found = false;
++    pfc::string8 version;
++};
++
++template <typename Matcher>
++bool probeComponent(ComponentProbe& probe, pfc::string_base* versionOut, Matcher matches) {
++    {
++        std::lock_guard<std::mutex> g(probe.m);
++        if (probe.cached) {
++            if (versionOut) { if (probe.found) *versionOut = probe.version; else versionOut->reset(); }
++            return probe.found;
++        }
++    }
++    bool found = false;
++    pfc::string8 foundVersion;
+     service_enum_t<componentversion> e;
+     componentversion::ptr ptr;
+     while (e.next(ptr)) {
+@@ -38,37 +59,35 @@
+         ptr->get_file_name(fileName);
+         ptr->get_component_name(componentName);
+         ptr->get_component_version(version);
++        if (matches(fileName, componentName)) { found = true; foundVersion = version; break; }
++    }
++    // While foobar2000 is still initializing, a negative answer might just mean the
++    // component has not registered yet, so it is only cached once start-up is over.
++    if (found || !core_api::is_initializing()) {
++        std::lock_guard<std::mutex> g(probe.m);
++        probe.cached = true; probe.found = found; probe.version = foundVersion;
++    }
++    if (versionOut) { if (found) *versionOut = foundVersion; else versionOut->reset(); }
++    return found;
++}
++}
+ 
++bool sacd_plugin_installed(pfc::string_base* versionOut) {
++    static ComponentProbe probe;
++    return probeComponent(probe, versionOut, [](const pfc::string8& fileName, const pfc::string8& componentName) {
+         const bool fileMatch = !_stricmp(fileName, "foo_input_sacd.dll");
+         const bool nameMatch = !_stricmp(componentName, "Super Audio CD Decoder") ||
+             (strstr(componentName.c_str(), "SACD") != nullptr && strstr(componentName.c_str(), "Decoder") != nullptr);
+-
+-        if (fileMatch || nameMatch) {
+-            if (versionOut) *versionOut = version;
+-            return true;
+-        }
+-    }
+-    if (versionOut) versionOut->reset();
+-    return false;
++        return fileMatch || nameMatch;
++    });
+ }
+ 
+-
+ bool dsd_processor_installed(pfc::string_base* versionOut) {
+-    service_enum_t<componentversion> e;
+-    componentversion::ptr ptr;
+-    while (e.next(ptr)) {
+-        pfc::string8 fileName, componentName, version;
+-        ptr->get_file_name(fileName);
+-        ptr->get_component_name(componentName);
+-        ptr->get_component_version(version);
++    static ComponentProbe probe;
++    return probeComponent(probe, versionOut, [](const pfc::string8& fileName, const pfc::string8& componentName) {
+         const bool fileMatch = !_stricmp(fileName, "foo_dsd_processor.dll");
+         const bool nameMatch = !_stricmp(componentName, "DSD Processor") ||
+             (strstr(componentName.c_str(), "DSD") != nullptr && strstr(componentName.c_str(), "Processor") != nullptr);
+-        if (fileMatch || nameMatch) {
+-            if (versionOut) *versionOut = version;
+-            return true;
+-        }
+-    }
+-    if (versionOut) versionOut->reset();
+-    return false;
++        return fileMatch || nameMatch;
++    });
+ }
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/dlna_server.cpp b/dlna_server.cpp
+--- a/dlna_server.cpp	2026-09-20 15:32:16.000000000 +0000
++++ b/dlna_server.cpp	2026-09-21 10:21:08.047978078 +0000
+@@ -23,6 +23,12 @@
+ constexpr const char* kArtistPrefix = "artist-";
+ constexpr const char* kAlbumPrefix = "album-";
+ constexpr const char* kTrackPrefix = "track-";
++constexpr const char* kAlbumsObject = "albums";
++constexpr const char* kGenresObject = "genres";
++constexpr const char* kFoldersObject = "folders";
++constexpr const char* kAllTracksObject = "alltracks";
++constexpr const char* kGenrePrefix = "genre-";
++constexpr const char* kFolderPrefix = "folder-";
+ constexpr size_t kMaxHttpHeader = 128 * 1024;
+ constexpr size_t kMaxSoapBody = 2 * 1024 * 1024;
+ constexpr uint32_t kCacheFormatVersion = 2;
+@@ -34,6 +40,32 @@
+     return s;
+ }
+ 
++// Name of the UPnP action in a SOAP request ("Browse", "GetSortCapabilities"...), or "" when it
++// cannot be determined. SOAPACTION looks like "urn:schemas-upnp-org:service:ContentDirectory:1#Browse"
++// (quotes optional). Without the header, the first element inside the SOAP body is the action, whatever
++// namespace prefix the control point chose (<u:Browse>, <ns0:Browse>, ...).
++std::string soapActionName(const std::string& soapActionHeader, const std::string& body) {
++    const size_t hash = soapActionHeader.rfind('#');
++    if (hash != std::string::npos) {
++        std::string name = soapActionHeader.substr(hash + 1);
++        while (!name.empty() && (name.back() == '"' || name.back() == ' ' || name.back() == '\r' || name.back() == '\n' || name.back() == '\t')) name.pop_back();
++        return name;
++    }
++    size_t pos = 0;
++    while ((pos = body.find('<', pos)) != std::string::npos) {
++        ++pos;
++        if (pos >= body.size() || body[pos] == '?' || body[pos] == '/' || body[pos] == '!') continue;
++        size_t end = pos;
++        while (end < body.size() && !std::isspace(static_cast<unsigned char>(body[end])) && body[end] != '>' && body[end] != '/') ++end;
++        const std::string tag = body.substr(pos, end - pos);
++        const size_t colon = tag.find(':');
++        const std::string local = colon == std::string::npos ? tag : tag.substr(colon + 1);
++        if (!local.empty() && local != "Envelope" && local != "Body" && local != "Header") return local;
++        pos = end;
++    }
++    return std::string();
++}
++
+ std::string trimCopy(std::string s) {
+     while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n')) s.erase(s.begin());
+     while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n')) s.pop_back();
+@@ -42,9 +74,30 @@
+ 
+ std::mutex g_logMutex;
+ 
+-std::wstring networkLogPath() {
+-    std::wstring p = pfc::stringcvt::string_wide_from_utf8(core_api::get_profile_path());
++std::wstring utf8ToWide(const char* text);   // defined further down
++
++// foobar2000 hands out paths in its canonical form: local files look like
++// "file://D:\Music\album.dsf", and core_api::get_profile_path() is a file:// URL
++// too. Win32 and std::filesystem need the native form. Returns an empty string for
++// anything that is not a plain local file (unpack://, cdda://, http://...). This
++// uses the SDK's own parser, so the two can never disagree.
++std::wstring nativePathFromFb2k(const char* fb2kPath) {
++    if (!fb2kPath || !*fb2kPath) return {};
++    pfc::string8 native;
++    if (!foobar2000_io::extract_native_path(fb2kPath, native)) return {};
++    return utf8ToWide(native.c_str());
++}
++
++// Native profile directory, with a trailing backslash; empty when unavailable.
++std::wstring profileFolderNative() {
++    std::wstring p = nativePathFromFb2k(core_api::get_profile_path());
+     if (!p.empty() && p.back() != L'\\' && p.back() != L'/') p += L'\\';
++    return p;
++}
++
++std::wstring networkLogPath() {
++    std::wstring p = profileFolderNative();
++    if (p.empty()) return {};
+     p += L"foo_sacd_dlna\\network.log";
+     CreateDirectoryW((p.substr(0, p.rfind(L"\\"))).c_str(), nullptr);
+     return p;
+@@ -63,6 +116,7 @@
+     FB2K_console_formatter() << "SACD DLNA [network]: " << message.c_str();
+     try {
+         const auto path = networkLogPath();
++        if (path.empty()) return;
+         std::error_code ec;
+         if (fs::exists(path, ec) && fs::file_size(path, ec) > 10ull * 1024ull * 1024ull) {
+             const auto old = path + L".1";
+@@ -81,6 +135,7 @@
+     FB2K_console_formatter() << "SACD DLNA [error]: " << message.c_str();
+     try {
+         const auto path = networkLogPath();
++        if (path.empty()) return;
+         std::error_code ec;
+         if (fs::exists(path, ec) && fs::file_size(path, ec) > 10ull * 1024ull * 1024ull) {
+             const auto old = path + L".1";
+@@ -105,8 +160,15 @@
+ }
+ 
+ std::wstring persistentCacheFolder() {
+-    std::wstring p = pfc::stringcvt::string_wide_from_utf8(core_api::get_profile_path());
+-    if (!p.empty() && p.back() != L'\\' && p.back() != L'/') p += L'\\';
++    std::wstring p = profileFolderNative();
++    if (p.empty()) {
++        // No native profile directory (should not happen): use the temp directory
++        // rather than ever writing relative to the current working directory.
++        wchar_t tmp[MAX_PATH + 2]{};
++        const DWORD n = GetTempPathW(MAX_PATH + 1, tmp);
++        p.assign(tmp, n);
++        if (!p.empty() && p.back() != L'\\' && p.back() != L'/') p += L'\\';
++    }
+     p += L"foo_sacd_dlna\\cache";
+     CreateDirectoryW((p.substr(0, p.rfind(L"\\"))).c_str(), nullptr);
+     CreateDirectoryW(p.c_str(), nullptr);
+@@ -127,7 +189,7 @@
+ 
+ std::string cacheKeyFor(const std::string& sourcePath, t_uint32 subsong) {
+     std::error_code ec;
+-    const std::wstring ws = utf8ToWide(sourcePath.c_str());
++    const std::wstring ws = nativePathFromFb2k(sourcePath.c_str());
+     const fs::path filePath(ws);
+     const uintmax_t size = fs::file_size(filePath, ec);
+     std::error_code ec2;
+@@ -445,10 +507,9 @@
+     void on_library_initialized() override { request(); }
+ 
+ private:
+-    void request() {
+-        if (!SacdDlnaServer::instance().get_status().sharingLibrary) return;
+-        SacdDlnaServer::instance().request_library_refresh();
+-    }
++    // request_library_refresh() already returns immediately unless the library is
++    // being shared, so there is no need to build a full status snapshot per callback.
++    void request() { SacdDlnaServer::instance().request_library_refresh(); }
+ };
+ 
+ SacdDlnaServer& SacdDlnaServer::instance() {
+@@ -574,10 +635,12 @@
+     clearPrefetchThreads();
+     for (auto& t : m_clientThreads) if (t.joinable()) t.join();
+     m_clientThreads.clear();
++    m_finishedClientThreads.clear();
+     for (auto& t : m_prefetchThreads) if (t.joinable()) t.join();
+     {
+         std::lock_guard<std::mutex> g(m_prefetchMutex);
+         m_prefetchThreads.clear();
++        m_finishedPrefetchThreads.clear();
+         m_prefetchAborters.clear();
+         m_prefetchKeys.clear();
+         m_prefetchActive = false;
+@@ -1146,6 +1209,8 @@
+         "<argument><name>TotalMatches</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>"
+         "<argument><name>UpdateID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_UpdateID</relatedStateVariable></argument>"
+         "</argumentList></action>"
++        "<action><name>GetSearchCapabilities</name><argumentList><argument><name>SearchCaps</name><direction>out</direction><relatedStateVariable>SearchCapabilities</relatedStateVariable></argument></argumentList></action>"
++        "<action><name>GetSortCapabilities</name><argumentList><argument><name>SortCaps</name><direction>out</direction><relatedStateVariable>SortCapabilities</relatedStateVariable></argument></argumentList></action>"
+         "<action><name>GetSystemUpdateID</name><argumentList><argument><name>Id</name><direction>out</direction><relatedStateVariable>SystemUpdateID</relatedStateVariable></argument></argumentList></action>"
+         "</actionList><serviceStateTable>"
+         "<stateVariable sendEvents=\"no\"><name>A_ARG_TYPE_ObjectID</name><dataType>string</dataType></stateVariable>"
+@@ -1155,6 +1220,8 @@
+         "<stateVariable sendEvents=\"no\"><name>A_ARG_TYPE_Count</name><dataType>ui4</dataType></stateVariable>"
+         "<stateVariable sendEvents=\"no\"><name>A_ARG_TYPE_SortCriteria</name><dataType>string</dataType></stateVariable>"
+         "<stateVariable sendEvents=\"no\"><name>A_ARG_TYPE_Result</name><dataType>string</dataType></stateVariable>"
++        "<stateVariable sendEvents=\"no\"><name>SearchCapabilities</name><dataType>string</dataType></stateVariable>"
++        "<stateVariable sendEvents=\"no\"><name>SortCapabilities</name><dataType>string</dataType></stateVariable>"
+         "<stateVariable sendEvents=\"no\"><name>SystemUpdateID</name><dataType>ui4</dataType></stateVariable>"
+         "</serviceStateTable></scpd>";
+ }
+@@ -1222,14 +1289,17 @@
+ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadataOnly,
+                                        unsigned startingIndex, unsigned requestedCount,
+                                        unsigned& numberReturned, unsigned& totalMatches) const {
+-    std::vector<Item> items;
+-    std::vector<Artist> artists;
+-    std::vector<Album> albums;
+-    uint32_t updateId = 1;
+-    {
+-        std::lock_guard<std::mutex> g(m_mutex);
+-        items = m_items; artists = m_artists; albums = m_albums; updateId = m_updateId;
+-    }
++    // localAddress() may resolve the host name (blocking), so do it BEFORE taking the
++    // library lock. The response is built straight from the shared data under the lock
++    // (no per-request copy of the library).
++    const std::string base = "http://" + localAddress() + ":" + std::to_string(m_port);
++    std::lock_guard<std::mutex> libraryLock(m_mutex);
++    const std::vector<Item>& items = m_items;
++    const std::vector<Artist>& artists = m_artists;
++    const std::vector<Album>& albums = m_albums;
++    const std::vector<Genre>& genres = m_genres;
++    const std::vector<Folder>& folders = m_folders;
++    const uint32_t updateId = m_updateId;
+ 
+     numberReturned = totalMatches = 0;
+     const std::string ns = " xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\""
+@@ -1237,17 +1307,25 @@
+         " xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\""
+         " xmlns:dlna=\"urn:schemas-dlna-org:metadata-1-0/\"";
+     std::string out = "<DIDL-Lite" + ns + ">";
+-    const std::string base = "http://" + localAddress() + ":" + std::to_string(m_port);
+ 
+-    auto findArtist = [&](uint32_t id) -> const Artist* { for (const auto& x : artists) if (x.id == id) return &x; return nullptr; };
+-    auto findAlbum = [&](uint32_t id) -> const Album* { for (const auto& x : albums) if (x.id == id) return &x; return nullptr; };
+-    auto findItem = [&](uint32_t id) -> const Item* { for (const auto& x : items) if (x.id == id) return &x; return nullptr; };
++    // id -> object lookups (hash maps rebuilt by publish()).
++    auto findArtist = [&](uint32_t id) -> const Artist* { const auto it = m_artistIndex.find(id); return it == m_artistIndex.end() ? nullptr : &artists[it->second]; };
++    auto findAlbum = [&](uint32_t id) -> const Album* { const auto it = m_albumIndex.find(id); return it == m_albumIndex.end() ? nullptr : &albums[it->second]; };
++    auto findGenre = [&](uint32_t id) -> const Genre* { const auto it = m_genreIndex.find(id); return it == m_genreIndex.end() ? nullptr : &genres[it->second]; };
++    auto findFolder = [&](uint32_t id) -> const Folder* { const auto it = m_folderIndex.find(id); return it == m_folderIndex.end() ? nullptr : &folders[it->second]; };
++    auto findItem = [&](uint32_t id) -> const Item* { const auto it = m_itemIndex.find(id); return it == m_itemIndex.end() ? nullptr : &items[it->second]; };
++    auto isPrefixed = [](const std::string& id, const char* prefix) { return id.rfind(prefix, 0) == 0; };
++    auto parseId = [](const std::string& id, const char* prefix) -> uint32_t {
++        try { return static_cast<uint32_t>(std::stoul(id.substr(strlen(prefix)))); } catch (...) { return 0; }
++    };
+ 
+     auto artUri = [&](uint32_t albumId) { return base + "/art/" + std::to_string(albumId); };
+ 
+-    auto appendContainer = [&](const std::string& id, const std::string& parent, const std::string& title, const char* cls, size_t childCount, uint32_t artAlbumId = 0) {
++    auto appendContainer = [&](const std::string& id, const std::string& parent, const std::string& title, const char* cls, size_t childCount,
++                               uint32_t artAlbumId = 0, const std::string& creator = std::string()) {
+         out += "<container id=\"" + xmlEscape(id) + "\" parentID=\"" + xmlEscape(parent) + "\" restricted=\"1\" childCount=\"" + std::to_string(childCount) + "\">";
+         out += "<dc:title>" + xmlEscape(title) + "</dc:title><upnp:class>" + cls + "</upnp:class>";
++        if (!creator.empty()) out += "<dc:creator>" + xmlEscape(creator) + "</dc:creator>";
+         if (artAlbumId) out += "<upnp:albumArtURI>" + artUri(artAlbumId) + "</upnp:albumArtURI>";
+         out += "</container>";
+     };
+@@ -1291,64 +1369,154 @@
+         out += "</item>";
+     };
+ 
++    // ---- the container tree ----
++    // 0 (root) -> Artists -> artist -> album -> tracks
++    //          -> Albums  -> album -> tracks
++    //          -> Genres  -> genre -> tracks
++    //          -> Folders -> folder -> (folders and tracks)
++    //          -> All Tracks -> tracks
++    const Folder* rootFolder = findFolder(m_folderRootId);
++    struct RootEntry { const char* id; const char* title; const char* cls; size_t count; };
++    const RootEntry rootEntries[] = {
++        { kArtistsObject,  "Artists",    "object.container.person.musicArtist", artists.size() },
++        { kAlbumsObject,   "Albums",     "object.container.album.musicAlbum",   m_albumsByTitle.size() },
++        { kGenresObject,   "Genres",     "object.container.genre.musicGenre",   genres.size() },
++        { kFoldersObject,  "Folders",    "object.container.storageFolder",      rootFolder ? rootFolder->folderIds.size() + rootFolder->itemIds.size() : 0 },
++        { kAllTracksObject, "All Tracks", "object.container",                   m_allTrackIds.size() },
++    };
++    constexpr size_t kRootEntryCount = sizeof(rootEntries) / sizeof(rootEntries[0]);
++    auto findRootEntry = [&](const std::string& id) -> const RootEntry* { for (const auto& e : rootEntries) if (id == e.id) return &e; return nullptr; };
++
++    const auto artistContainerId = [&](uint32_t id) { return std::string(kArtistPrefix) + std::to_string(id); };
++    const auto albumContainerId = [&](uint32_t id) { return std::string(kAlbumPrefix) + std::to_string(id); };
++    const auto genreContainerId = [&](uint32_t id) { return std::string(kGenrePrefix) + std::to_string(id); };
++    const auto folderContainerId = [&](uint32_t id) { return std::string(kFolderPrefix) + std::to_string(id); };
++    const auto trackObjectId = [&](uint32_t id) { return std::string(kTrackPrefix) + std::to_string(id); };
++    // A folder's parent is the "Folders" root entry when it hangs directly off the (collapsed) root.
++    const auto folderParentId = [&](const Folder& f) { return f.parentId == m_folderRootId ? std::string(kFoldersObject) : folderContainerId(f.parentId); };
++
++    auto appendAlbumContainer = [&](const Album& alb, const std::string& parent, bool withCreator) {
++        const Artist* artist = withCreator ? findArtist(alb.artistId) : nullptr;
++        appendContainer(albumContainerId(alb.id), parent, alb.title, "object.container.album.musicAlbum", alb.itemIds.size(), alb.id, artist ? artist->name : std::string());
++    };
++
++    // Applies StartingIndex/RequestedCount to a list of `total` children. emit(n) appends child n and
++    // returns true when it produced an element. StartingIndex + RequestedCount is done in 64 bits
++    // (some renderers send RequestedCount = 0xFFFFFFFF).
++    auto page = [&](unsigned total, auto&& emit) {
++        totalMatches = total;
++        const unsigned requestedEnd = static_cast<unsigned>(std::min<uint64_t>(static_cast<uint64_t>(startingIndex) + requestedCount, UINT_MAX));
++        const unsigned end = requestedCount ? (requestedEnd < total ? requestedEnd : total) : total;
++        for (unsigned n = startingIndex; n < end; ++n) if (emit(n)) ++numberReturned;
++    };
++
++    auto emitTrackList = [&](const std::vector<uint32_t>& ids, const std::string& parent) {
++        page(static_cast<unsigned>(ids.size()), [&](unsigned n) {
++            const Item* item = findItem(ids[n]);
++            if (!item) return false;
++            appendTrack(*item, parent, trackObjectId(item->id));
++            return true;
++        });
++    };
++
++    auto emitFolderChildren = [&](const Folder& f, const std::string& parent) {
++        const size_t subfolders = f.folderIds.size();
++        page(static_cast<unsigned>(subfolders + f.itemIds.size()), [&](unsigned n) {
++            if (n < subfolders) {
++                const Folder* sub = findFolder(f.folderIds[n]);
++                if (!sub) return false;
++                appendContainer(folderContainerId(sub->id), parent, sub->name, "object.container.storageFolder", sub->folderIds.size() + sub->itemIds.size());
++                return true;
++            }
++            const Item* item = findItem(f.itemIds[n - subfolders]);
++            if (!item) return false;
++            appendTrack(*item, parent, trackObjectId(item->id));
++            return true;
++        });
++    };
++
+     if (metadataOnly) {
+         if (objectId == kRootObject) {
+-            appendContainer(kRootObject, "-1", "foobar2000 SACD DSD", "object.container", 1);
++            appendContainer(kRootObject, "-1", "foobar2000 SACD DSD", "object.container", kRootEntryCount);
+             numberReturned = totalMatches = 1;
+-        } else if (objectId == kArtistsObject) {
+-            appendContainer(kArtistsObject, kRootObject, "Artists", "object.container.person.musicArtist", artists.size());
++        } else if (const RootEntry* entry = findRootEntry(objectId)) {
++            appendContainer(entry->id, kRootObject, entry->title, entry->cls, entry->count);
+             numberReturned = totalMatches = 1;
+-        } else if (objectId.rfind(kArtistPrefix, 0) == 0) {
+-            uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kArtistPrefix))); } catch (...) {}
+-            if (const auto* a = findArtist(id)) { appendContainer(objectId, kArtistsObject, a->name, "object.container.person.musicArtist", a->albumIds.size()); numberReturned = totalMatches = 1; }
+-        } else if (objectId.rfind(kAlbumPrefix, 0) == 0) {
+-            uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kAlbumPrefix))); } catch (...) {}
+-            if (const auto* a = findAlbum(id)) { appendContainer(objectId, std::string(kArtistPrefix) + std::to_string(a->artistId), a->title, "object.container.album.musicAlbum", a->itemIds.size(), a->id); numberReturned = totalMatches = 1; }
+-        } else if (objectId.rfind(kTrackPrefix, 0) == 0) {
+-            uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kTrackPrefix))); } catch (...) {}
+-            if (const auto* i = findItem(id)) { const auto parent = std::string(kAlbumPrefix) + std::to_string(i->albumId); appendTrack(*i, parent, objectId); numberReturned = totalMatches = 1; }
++        } else if (isPrefixed(objectId, kArtistPrefix)) {
++            if (const Artist* a = findArtist(parseId(objectId, kArtistPrefix))) {
++                appendContainer(objectId, kArtistsObject, a->name, "object.container.person.musicArtist", a->albumIds.size());
++                numberReturned = totalMatches = 1;
++            }
++        } else if (isPrefixed(objectId, kAlbumPrefix)) {
++            if (const Album* a = findAlbum(parseId(objectId, kAlbumPrefix))) {
++                appendContainer(objectId, artistContainerId(a->artistId), a->title, "object.container.album.musicAlbum", a->itemIds.size(), a->id);
++                numberReturned = totalMatches = 1;
++            }
++        } else if (isPrefixed(objectId, kGenrePrefix)) {
++            if (const Genre* g = findGenre(parseId(objectId, kGenrePrefix))) {
++                appendContainer(objectId, kGenresObject, g->name, "object.container.genre.musicGenre", g->itemIds.size());
++                numberReturned = totalMatches = 1;
++            }
++        } else if (isPrefixed(objectId, kFolderPrefix)) {
++            if (const Folder* f = findFolder(parseId(objectId, kFolderPrefix))) {
++                appendContainer(objectId, folderParentId(*f), f->name, "object.container.storageFolder", f->folderIds.size() + f->itemIds.size());
++                numberReturned = totalMatches = 1;
++            }
++        } else if (isPrefixed(objectId, kTrackPrefix)) {
++            if (const Item* i = findItem(parseId(objectId, kTrackPrefix))) {
++                appendTrack(*i, albumContainerId(i->albumId), objectId);
++                numberReturned = totalMatches = 1;
++            }
+         }
+     } else if (objectId == kRootObject) {
+-        appendContainer(kArtistsObject, kRootObject, "Artists", "object.container.person.musicArtist", artists.size());
+-        numberReturned = totalMatches = 1;
++        page(static_cast<unsigned>(kRootEntryCount), [&](unsigned n) {
++            const RootEntry& e = rootEntries[n];
++            appendContainer(e.id, kRootObject, e.title, e.cls, e.count);
++            return true;
++        });
+     } else if (objectId == kArtistsObject) {
+-        totalMatches = static_cast<unsigned>(artists.size());
+-        const unsigned requestedEnd = startingIndex + requestedCount;
+-            const unsigned end = requestedCount ? (requestedEnd < totalMatches ? requestedEnd : totalMatches) : totalMatches;
+-        for (unsigned n = startingIndex; n < end; ++n) {
+-            const auto& a = artists[n];
+-            appendContainer(std::string(kArtistPrefix) + std::to_string(a.id), kArtistsObject, a.name, "object.container.person.musicArtist", a.albumIds.size());
+-            ++numberReturned;
+-        }
+-    } else if (objectId.rfind(kArtistPrefix, 0) == 0) {
+-        uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kArtistPrefix))); } catch (...) {}
+-        const auto* a = findArtist(id);
+-        if (a) {
+-            totalMatches = static_cast<unsigned>(a->albumIds.size());
+-            const unsigned requestedEnd = startingIndex + requestedCount;
+-            const unsigned end = requestedCount ? (requestedEnd < totalMatches ? requestedEnd : totalMatches) : totalMatches;
+-            for (unsigned n = startingIndex; n < end; ++n) {
+-                const auto* alb = findAlbum(a->albumIds[n]); if (!alb) continue;
+-                appendContainer(std::string(kAlbumPrefix) + std::to_string(alb->id), objectId, alb->title, "object.container.album.musicAlbum", alb->itemIds.size(), alb->id);
+-                ++numberReturned;
+-            }
+-        }
+-    } else if (objectId.rfind(kAlbumPrefix, 0) == 0) {
+-        uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kAlbumPrefix))); } catch (...) {}
+-        const auto* a = findAlbum(id);
+-        if (a) {
+-            totalMatches = static_cast<unsigned>(a->itemIds.size());
+-            const unsigned requestedEnd = startingIndex + requestedCount;
+-            const unsigned end = requestedCount ? (requestedEnd < totalMatches ? requestedEnd : totalMatches) : totalMatches;
+-            for (unsigned n = startingIndex; n < end; ++n) {
+-                const auto* item = findItem(a->itemIds[n]); if (!item) continue;
+-                appendTrack(*item, objectId, std::string(kTrackPrefix) + std::to_string(item->id));
+-                ++numberReturned;
+-            }
+-        }
+-    } else if (objectId.rfind(kTrackPrefix, 0) == 0) {
+-        uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kTrackPrefix))); } catch (...) {}
+-        if (const auto* i = findItem(id)) { appendTrack(*i, std::string(kAlbumPrefix) + std::to_string(i->albumId), objectId); numberReturned = totalMatches = 1; }
++        page(static_cast<unsigned>(artists.size()), [&](unsigned n) {
++            const Artist& a = artists[n];
++            appendContainer(artistContainerId(a.id), kArtistsObject, a.name, "object.container.person.musicArtist", a.albumIds.size());
++            return true;
++        });
++    } else if (isPrefixed(objectId, kArtistPrefix)) {
++        if (const Artist* a = findArtist(parseId(objectId, kArtistPrefix))) {
++            page(static_cast<unsigned>(a->albumIds.size()), [&](unsigned n) {
++                const Album* alb = findAlbum(a->albumIds[n]);
++                if (!alb) return false;
++                appendAlbumContainer(*alb, objectId, false);
++                return true;
++            });
++        }
++    } else if (objectId == kAlbumsObject) {
++        page(static_cast<unsigned>(m_albumsByTitle.size()), [&](unsigned n) {
++            const Album* alb = findAlbum(m_albumsByTitle[n]);
++            if (!alb) return false;
++            appendAlbumContainer(*alb, kAlbumsObject, true);   // creator shown: many albums share a title
++            return true;
++        });
++    } else if (isPrefixed(objectId, kAlbumPrefix)) {
++        if (const Album* a = findAlbum(parseId(objectId, kAlbumPrefix))) emitTrackList(a->itemIds, objectId);
++    } else if (objectId == kGenresObject) {
++        page(static_cast<unsigned>(genres.size()), [&](unsigned n) {
++            const Genre& g = genres[n];
++            appendContainer(genreContainerId(g.id), kGenresObject, g.name, "object.container.genre.musicGenre", g.itemIds.size());
++            return true;
++        });
++    } else if (isPrefixed(objectId, kGenrePrefix)) {
++        if (const Genre* g = findGenre(parseId(objectId, kGenrePrefix))) emitTrackList(g->itemIds, objectId);
++    } else if (objectId == kFoldersObject) {
++        if (rootFolder) emitFolderChildren(*rootFolder, objectId);
++    } else if (isPrefixed(objectId, kFolderPrefix)) {
++        if (const Folder* f = findFolder(parseId(objectId, kFolderPrefix))) emitFolderChildren(*f, objectId);
++    } else if (objectId == kAllTracksObject) {
++        emitTrackList(m_allTrackIds, objectId);
++    } else if (isPrefixed(objectId, kTrackPrefix)) {
++        if (const Item* i = findItem(parseId(objectId, kTrackPrefix))) {
++            appendTrack(*i, albumContainerId(i->albumId), objectId);
++            numberReturned = totalMatches = 1;
++        }
+     }
+ 
+     out += "</DIDL-Lite>";
+@@ -1362,12 +1530,13 @@
+     const bool metadataOnly = _stricmp(browseFlag.c_str(), "BrowseMetadata") == 0;
+     unsigned numberReturned = 0, totalMatches = 0;
+     const std::string didl = browseDidl(objectId, metadataOnly, startingIndex, requestedCount, numberReturned, totalMatches);
+-    const auto st = get_status();
++    uint32_t updateId = 1;
++    { std::lock_guard<std::mutex> g(m_mutex); updateId = m_updateId; }   // get_status() would scan the cache folder just for this
+     return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">"
+         "<s:Body><u:BrowseResponse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">"
+         "<Result>" + xmlEscape(didl) + "</Result><NumberReturned>" + std::to_string(numberReturned) + "</NumberReturned>"
+-        "<TotalMatches>" + std::to_string(totalMatches) + "</TotalMatches><UpdateID>" + std::to_string(st.updateId) + "</UpdateID>"
++        "<TotalMatches>" + std::to_string(totalMatches) + "</TotalMatches><UpdateID>" + std::to_string(updateId) + "</UpdateID>"
+         "</u:BrowseResponse></s:Body></s:Envelope>";
+ }
+ 
+@@ -1720,6 +1889,14 @@
+         m_prefetchState = "PREPARING NEXT TRACK";
+         ++m_prefetchActiveCount;
+         m_prefetchActive = true;
++        // Reap prefetch threads that already finished (same reason as the client threads).
++        for (const auto& id : m_finishedPrefetchThreads) {
++            const auto it = std::find_if(m_prefetchThreads.begin(), m_prefetchThreads.end(), [&](const std::thread& t) { return t.get_id() == id; });
++            if (it == m_prefetchThreads.end()) continue;
++            if (it->joinable()) it->join();
++            m_prefetchThreads.erase(it);
++        }
++        m_finishedPrefetchThreads.clear();
+         auto aborter = std::make_shared<abort_callback_impl>();
+         m_prefetchAborters.push_back(aborter);
+         try {
+@@ -1745,6 +1922,7 @@
+                     if (it != m_prefetchAborters.end()) m_prefetchAborters.erase(it);
+                     m_prefetchState = m_prefetchActive ? (ok ? "READY / OTHER PREFETCH ACTIVE" : "NOT READY / OTHER PREFETCH ACTIVE")
+                                                        : (ok ? "READY" : "NOT READY");
++                    m_finishedPrefetchThreads.push_back(std::this_thread::get_id());   // last locked step: safe to join
+                 }
+             });
+         } catch (...) {
+@@ -1803,7 +1981,9 @@
+         if (!ensureCached(item, path, track, aborter)) return false;
+         ext = ".dsf";
+     } else {
+-        path = utf8ToWide(item.sourcePath.c_str());
++        // item.sourcePath is a foobar2000 path ("file://..."): convert before touching the disk.
++        path = nativePathFromFb2k(item.sourcePath.c_str());
++        if (path.empty()) return false;   // not a plain local file
+         ext = item.sourceExt;
+     }
+ 
+@@ -1902,7 +2082,11 @@
+         setLastError("stream failed with an unknown exception");
+     }
+     updateStreamEnd();
+-    return ok;
++    // The response headers are already on the wire, so this request is finished whatever
++    // happened: returning false would make handleClient append a "404 Not Found" to a
++    // half-sent audio stream.
++    if (!ok) networkLog("stream ended early for " + peerIp + " / " + track.title);
++    return true;
+ }
+ 
+ bool SacdDlnaServer::serveAlbumArt(SOCKET s, uint32_t albumId, const std::string& requestLine, abort_callback_impl& aborter) {
+@@ -1929,13 +2113,12 @@
+     }
+     if (!handle.is_valid()) return false;
+ 
++    // File size/timestamp come from the metadb cache: no disk access for a cache key.
+     uint64_t sourceSize = 0; int64_t sourceTime = 0;
+     {
+-        std::error_code ec; const std::wstring ws = utf8ToWide(handle->get_path());
+-        const fs::path filePath(ws);
+-        const auto sz = fs::file_size(filePath, ec);
+-        sourceSize = ec ? 0 : static_cast<uint64_t>(sz);
+-        std::error_code ec2; const auto wt = fs::last_write_time(filePath, ec2); sourceTime = ec2 ? 0 : static_cast<int64_t>(wt.time_since_epoch().count());
++        const foobar2000_io::t_filestats stats = handle->get_filestats();
++        sourceSize = stats.m_size != foobar2000_io::filesize_invalid ? static_cast<uint64_t>(stats.m_size) : 0;
++        sourceTime = static_cast<int64_t>(stats.m_timestamp);
+     }
+     const std::string keyMaterial = std::string(handle->get_path()) + "#" + std::to_string(sourceSize) + "#" + std::to_string(sourceTime) + "#art";
+     char keyHex[32]{}; snprintf(keyHex, sizeof(keyHex), "%016llX", static_cast<unsigned long long>(fnv1a64(keyMaterial)));
+@@ -1983,6 +2166,7 @@
+ void SacdDlnaServer::closeClientState(SOCKET s) {
+     std::lock_guard<std::mutex> g(m_clientMutex);
+     m_clients.erase(std::remove_if(m_clients.begin(), m_clients.end(), [s](const ClientState& c) { return c.socket == s; }), m_clients.end());
++    m_finishedClientThreads.push_back(std::this_thread::get_id());   // last thing clientThread() does: safe to join
+ }
+ 
+ void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
+@@ -2066,9 +2250,32 @@
+         const size_t bodyStart = req.find("\r\n\r\n");
+         const std::string soap = bodyStart == std::string::npos ? std::string{} : req.substr(bodyStart + 4);
+         const auto action = headerValueCI(req, "SOAPACTION");
+-        if (lowerCopy(action).find("getsystemupdateid") != std::string::npos || lowerCopy(soap).find("<u:getsystemupdateid") != std::string::npos) {
++        const std::string actionName = lowerCopy(soapActionName(action, soap));
++        const auto soapReply = [&](const std::string& actionResponse) {
++            return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
++                "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">"
++                "<s:Body>" + actionResponse + "</s:Body></s:Envelope>";
++        };
++        if (actionName == "getsystemupdateid") {
+             sendXml(systemUpdateIdResponse()); return;
+         }
++        // Mandatory ContentDirectory:1 actions. Before, every request that was not GetSystemUpdateID was
++        // answered as a Browse, so control points asking for these got a BrowseResponse and many gave up.
++        if (actionName == "getsearchcapabilities") {   // no Search action: empty capability list
++            sendXml(soapReply("<u:GetSearchCapabilitiesResponse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\"><SearchCaps></SearchCaps></u:GetSearchCapabilitiesResponse>")); return;
++        }
++        if (actionName == "getsortcapabilities") {     // SortCriteria is ignored: empty capability list
++            sendXml(soapReply("<u:GetSortCapabilitiesResponse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\"><SortCaps></SortCaps></u:GetSortCapabilitiesResponse>")); return;
++        }
++        if (!actionName.empty() && actionName != "browse") {   // anything else (Search, CreateObject...): UPnP error 401
++            const std::string fault = soapReply("<s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>"
++                "<UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>401</errorCode><errorDescription>Invalid Action</errorDescription></UPnPError>"
++                "</detail></s:Fault>");
++            const std::string faultHeader = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/xml; charset=\"utf-8\"\r\nContent-Length: " + std::to_string(fault.size()) + "\r\nConnection: close\r\n\r\n";
++            sendAll(s, faultHeader.data(), faultHeader.size(), &aborter); sendAll(s, fault.data(), fault.size(), &aborter);
++            networkLog("ContentDirectory: unsupported action " + actionName);
++            return;
++        }
+         const std::string objectId = urlPathDecode(extractSoapArg(soap, "ObjectID", kRootObject));
+         const std::string browseFlag = extractSoapArg(soap, "BrowseFlag", "BrowseDirectChildren");
+         const unsigned start = extractSoapUint(soap, "StartingIndex", 0);
+@@ -2134,6 +2341,16 @@
+         bool launched = false;
+         {
+             std::lock_guard<std::mutex> g(m_clientMutex);
++            // Reap client threads that already finished. Every HTTP request runs on its own
++            // thread; without this the std::thread objects (and their OS handles) piled up
++            // until the server was stopped.
++            for (const auto& id : m_finishedClientThreads) {
++                const auto it = std::find_if(m_clientThreads.begin(), m_clientThreads.end(), [&](const std::thread& t) { return t.get_id() == id; });
++                if (it == m_clientThreads.end()) continue;
++                if (it->joinable()) it->join();
++                m_clientThreads.erase(it);
++            }
++            m_finishedClientThreads.clear();
+             m_clients.push_back({ clientSocket, aborter });
+             try {
+                 m_clientThreads.emplace_back([this, clientSocket, aborter] { clientThread(clientSocket, aborter); });
+@@ -2405,12 +2622,20 @@
+ 
+ void SacdDlnaServer::clear_shared_library() {
+     std::lock_guard<std::mutex> g(m_mutex);
+-    m_items.clear(); m_artists.clear(); m_albums.clear(); m_sharedCount = 0; m_sharingLibrary = false; ++m_updateId;
++    m_items.clear(); m_artists.clear(); m_albums.clear(); m_genres.clear(); m_folders.clear();
++    m_albumsByTitle.clear(); m_allTrackIds.clear(); m_folderRootId = 0;
++    m_itemIndex.clear(); m_artistIndex.clear(); m_albumIndex.clear(); m_genreIndex.clear(); m_folderIndex.clear();
++    m_sharedCount = 0; m_sharingLibrary = false; ++m_updateId;
+     { std::lock_guard<std::mutex> a(m_artMutex); m_artCache.clear(); }
+ }
+ 
+ void SacdDlnaServer::publish(const metadb_handle_list& items) {
++    const auto t0 = std::chrono::steady_clock::now();
++    const bool dspEnabled = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled);
++    const bool dspInstalled = !dspEnabled || DsdProcessorBridge::installed();   // evaluated once, not per track
++
+     std::vector<Item> newItems; newItems.reserve(items.get_count());
++    std::vector<libindex::Track> indexTracks; indexTracks.reserve(items.get_count());   // parallel to newItems
+     for (size_t i = 0; i < items.get_count(); ++i) {
+         const auto& handle = items[i]; const char* path = handle->get_path(); if (!path || !*path) continue;
+         const char* ext = strrchr(path, '.'); if (!ext) continue;
+@@ -2418,25 +2643,48 @@
+         const bool isPcm = !_stricmp(ext, ".flac") || !_stricmp(ext, ".wav") || !_stricmp(ext, ".aif") || !_stricmp(ext, ".aiff") ||
+             !_stricmp(ext, ".wv") || !_stricmp(ext, ".tta") || !_stricmp(ext, ".ape") || !_stricmp(ext, ".mp3") ||
+             !_stricmp(ext, ".m4a") || !_stricmp(ext, ".mp4") || !_stricmp(ext, ".ogg") || !_stricmp(ext, ".opus") || !_stricmp(ext, ".aac");
+-        if (!isDsd && !(static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) && isPcm)) continue;
+-        if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) && !DsdProcessorBridge::installed()) continue;
++        if (!isDsd && !(dspEnabled && isPcm)) continue;
++        if (!dspInstalled) continue;
+         Item x; x.id = m_nextId++; x.sourcePath = path; x.sourceExt = lowerCopy(ext); x.subsong = handle->get_subsong_index(); x.handle = handle;
+-        {
+-            std::error_code ec; const std::wstring ws = utf8ToWide(path);
+-            const fs::path filePath(ws);
+-            const auto sz = fs::file_size(filePath, ec);
+-            x.sourceSize = ec ? 0 : static_cast<uint64_t>(sz);
++
++        // File size and timestamp come from foobar2000's metadb cache, so indexing a
++        // library does not stat thousands of files (this runs on the main thread).
++        const foobar2000_io::t_filestats stats = handle->get_filestats();
++        x.sourceSize = stats.m_size != foobar2000_io::filesize_invalid ? static_cast<uint64_t>(stats.m_size) : 0;
++        x.sourceWriteTime = static_cast<int64_t>(stats.m_timestamp);
++        pfc::string8 nativeUtf8;
++        const bool isLocalFile = foobar2000_io::extract_native_path(path, nativeUtf8);
++        const std::wstring nativePath = isLocalFile ? utf8ToWide(nativeUtf8.c_str()) : std::wstring();
++        if ((x.sourceSize == 0 || x.sourceWriteTime == 0) && !nativePath.empty()) {   // stats not known yet: one direct stat
++            std::error_code ec; const fs::path filePath(nativePath);
++            const auto sz = fs::file_size(filePath, ec); if (!ec) x.sourceSize = static_cast<uint64_t>(sz);
+             std::error_code ec2; const auto wt = fs::last_write_time(filePath, ec2);
+-            x.sourceWriteTime = ec2 ? 0 : static_cast<int64_t>(wt.time_since_epoch().count());
++            if (!ec2) x.sourceWriteTime = static_cast<int64_t>(wt.time_since_epoch().count());
+         }
++
+         try {
+-            abort_callback_dummy abort; service_ptr_t<input_info_reader> infoReader; input_entry::g_open_for_info_read(infoReader, nullptr, path, abort); file_info_impl info; infoReader->get_info(x.subsong, info, abort);
++            // Tags and technical info also come from the metadb cache. Only when a track
++            // is not in the metadb yet is the file opened (previously EVERY track was
++            // opened, which froze the UI for large or network libraries).
++            file_info_impl fallbackInfo;
++            const file_info* infoPtr = nullptr;
++            metadb_info_container::ptr infoRef;
++            if (handle->get_info_ref(infoRef) && infoRef.is_valid()) {
++                infoPtr = &infoRef->info();
++            } else {
++                abort_callback_dummy abort; service_ptr_t<input_info_reader> infoReader;
++                input_entry::g_open_for_info_read(infoReader, nullptr, path, abort);
++                infoReader->get_info(x.subsong, fallbackInfo, abort);
++                infoPtr = &fallbackInfo;
++            }
++            const file_info& info = *infoPtr;
+             auto meta = [&](const char* key) { const char* v = info.meta_get(key, 0); return v ? std::string(v) : std::string{}; };
+             auto metaFirst = [&](std::initializer_list<const char*> names) { for (auto n : names) { auto v = meta(n); if (!v.empty()) return v; } return std::string{}; };
+             x.track.title = meta("title"); x.track.artist = meta("artist"); x.track.album = meta("album"); x.track.albumArtist = metaFirst({"album artist", "albumartist"});
+             x.track.genre = meta("genre"); x.track.date = metaFirst({"date", "year"}); x.track.composer = meta("composer"); x.track.publisher = metaFirst({"publisher", "label"}); x.track.comment = metaFirst({"comment", "comments"}); x.track.trackNumber = metaFirst({"tracknumber", "track number", "track"}); x.track.discNumber = metaFirst({"discnumber", "disc number", "disc"}); x.track.totalTracks = metaFirst({"totaltracks", "total tracks", "tracktotal"}); x.track.totalDiscs = metaFirst({"totaldiscs", "total discs"});
+             if (x.track.title.empty()) x.track.title = "Track " + std::to_string(x.subsong + 1);
+-            if (x.track.artist.empty()) x.track.artist = "Unknown Artist"; if (x.track.album.empty()) x.track.album = "Unknown Album";
++            if (x.track.artist.empty()) x.track.artist = "Unknown Artist";
++            if (x.track.album.empty()) x.track.album = "Unknown Album";
+             x.track.duration = info.get_length();
+             x.sourceSampleRate = static_cast<uint32_t>(std::max<t_int64>(0, info.info_get_int("samplerate")));
+             x.sourceChannels = static_cast<uint32_t>(std::max<t_int64>(1, info.info_get_int("channels")));
+@@ -2445,63 +2693,41 @@
+             x.track.channels = x.sourceChannels;
+             x.track.bitsPerSample = x.sourceBitsPerSample ? x.sourceBitsPerSample : 1;
+             if (x.track.dsdRate != 2822400 && x.track.dsdRate != 5644800 && x.track.dsdRate != 11289600) x.track.dsdRate = 0;
+-            if (x.sourceExt == ".dsf" || x.sourceExt == ".dff") {
+-                std::error_code ec; const std::wstring ws = utf8ToWide(x.sourcePath.c_str()); const fs::path filePath(ws); x.track.fileSize = fs::file_size(filePath, ec);
+-            }
+-            x.track.path = x.sourceExt == ".iso" ? std::wstring{} : utf8ToWide(x.sourcePath.c_str());
++            if (x.sourceExt == ".dsf" || x.sourceExt == ".dff") x.track.fileSize = x.sourceSize;
++            x.track.path = x.sourceExt == ".iso" ? std::wstring{} : nativePath;
++            libindex::Track it;
++            it.id = x.id; it.title = x.track.title; it.artist = x.track.artist; it.albumArtist = x.track.albumArtist;
++            it.album = x.track.album; it.genre = x.track.genre; it.trackNumber = x.track.trackNumber; it.discNumber = x.track.discNumber;
++            if (isLocalFile) it.nativePath = nativeUtf8.c_str();
+             newItems.push_back(std::move(x));
++            indexTracks.push_back(std::move(it));
+         } catch (std::exception const& e) { setLastError(std::string("unable to index ") + path + ": " + e.what()); }
+     }
+ 
+-    std::vector<Artist> newArtists; std::vector<Album> newAlbums;
+-    auto findArtist = [&](const std::string& key) -> Artist* { for (auto& x : newArtists) if (x.key == key) return &x; return nullptr; };
+-    auto findAlbum = [&](uint32_t artistId, const std::string& key) -> Album* { for (auto& x : newAlbums) if (x.artistId == artistId && x.key == key) return &x; return nullptr; };
+-    for (auto& item : newItems) {
+-        const std::string artistKey = normalizeKey(item.track.artist); Artist* artist = findArtist(artistKey);
+-        if (!artist) { Artist a; a.id = m_nextArtistId++; a.name = item.track.artist; a.key = artistKey; newArtists.push_back(std::move(a)); artist = &newArtists.back(); }
+-        item.artistId = artist->id;
+-        const std::string albumKey = normalizeKey(item.track.album); Album* album = findAlbum(artist->id, albumKey);
+-        if (!album) { Album a; a.id = m_nextAlbumId++; a.artistId = artist->id; a.title = item.track.album; a.key = albumKey; a.representativeItemId = item.id; newAlbums.push_back(std::move(a)); album = &newAlbums.back(); artist->albumIds.push_back(album->id); }
+-        item.albumId = album->id; album->itemIds.push_back(item.id);
+-    }
+-
+-    auto ciLess = [](const std::string& a, const std::string& b) { return _stricmp(a.c_str(), b.c_str()) < 0; };
+-    auto numberPrefix = [](const std::string& s) -> unsigned {
+-        const char* p = s.c_str();
+-        while (*p && isspace(static_cast<unsigned char>(*p))) ++p;
+-        if (!*p || !isdigit(static_cast<unsigned char>(*p))) return UINT_MAX;
+-        return static_cast<unsigned>(strtoul(p, nullptr, 10));
+-    };
+-    std::sort(newArtists.begin(), newArtists.end(), [&](const Artist& a, const Artist& b) { return ciLess(a.name, b.name); });
+-    std::sort(newAlbums.begin(), newAlbums.end(), [&](const Album& a, const Album& b) {
+-        const auto aa = std::find_if(newArtists.begin(), newArtists.end(), [&](const Artist& x) { return x.id == a.artistId; });
+-        const auto bb = std::find_if(newArtists.begin(), newArtists.end(), [&](const Artist& x) { return x.id == b.artistId; });
+-        const std::string an = aa != newArtists.end() ? aa->name : std::string{}, bn = bb != newArtists.end() ? bb->name : std::string{};
+-        if (_stricmp(an.c_str(), bn.c_str()) != 0) return ciLess(an, bn); return ciLess(a.title, b.title);
+-    });
+-    for (auto& album : newAlbums) std::sort(album.itemIds.begin(), album.itemIds.end(), [&](uint32_t a, uint32_t b) {
+-        const auto ia = std::find_if(newItems.begin(), newItems.end(), [&](const Item& x) { return x.id == a; });
+-        const auto ib = std::find_if(newItems.begin(), newItems.end(), [&](const Item& x) { return x.id == b; });
+-        if (ia == newItems.end() || ib == newItems.end()) return a < b;
+-        const unsigned da = numberPrefix(ia->track.discNumber), db = numberPrefix(ib->track.discNumber);
+-        if (da != db) return da < db;
+-        const unsigned ta = numberPrefix(ia->track.trackNumber), tb = numberPrefix(ib->track.trackNumber);
+-        if (ta != tb) return ta < tb;
+-        if (_stricmp(ia->track.title.c_str(), ib->track.title.c_str()) != 0) return ciLess(ia->track.title, ib->track.title);
+-        return ia->id < ib->id;
+-    });
+-    for (auto& artist : newArtists) std::sort(artist.albumIds.begin(), artist.albumIds.end(), [&](uint32_t a, uint32_t b) {
+-        const auto aa = std::find_if(newAlbums.begin(), newAlbums.end(), [&](const Album& x) { return x.id == a; });
+-        const auto bb = std::find_if(newAlbums.begin(), newAlbums.end(), [&](const Album& x) { return x.id == b; });
+-        return (aa == newAlbums.end() || bb == newAlbums.end()) ? a < b : ciLess(aa->title, bb->title);
+-    });
++    // Artists, Albums, Genres, Folders and All Tracks (grouping, sorting and ids live in library_index.h,
++    // which has its own unit test under tests/library_index_selftest).
++    libindex::NextIds nextIds;
++    nextIds.artist = m_nextArtistId; nextIds.album = m_nextAlbumId; nextIds.genre = m_nextGenreId; nextIds.folder = m_nextFolderId;
++    libindex::Index index = libindex::build(indexTracks, nextIds);
++    m_nextArtistId = nextIds.artist; m_nextAlbumId = nextIds.album; m_nextGenreId = nextIds.genre; m_nextFolderId = nextIds.folder;
++    for (size_t i = 0; i < newItems.size(); ++i) { newItems[i].artistId = index.trackArtistId[i]; newItems[i].albumId = index.trackAlbumId[i]; }
+ 
+     {
+         std::lock_guard<std::mutex> g(m_mutex);
+-        m_items = std::move(newItems); m_artists = std::move(newArtists); m_albums = std::move(newAlbums); m_sharedCount = m_items.size(); ++m_updateId;
++        m_items = std::move(newItems);
++        m_artists = std::move(index.artists); m_albums = std::move(index.albums);
++        m_genres = std::move(index.genres); m_folders = std::move(index.folders);
++        m_albumsByTitle = std::move(index.albumsByTitle); m_allTrackIds = std::move(index.allTracks);
++        m_folderRootId = index.folderRoot;
++        m_artistIndex = std::move(index.artistIndex); m_albumIndex = std::move(index.albumIndex);
++        m_genreIndex = std::move(index.genreIndex); m_folderIndex = std::move(index.folderIndex);
++        m_itemIndex.clear(); m_itemIndex.reserve(m_items.size());
++        for (size_t i = 0; i < m_items.size(); ++i) m_itemIndex.emplace(m_items[i].id, i);
++        m_sharedCount = m_items.size(); ++m_updateId;
+     }
+     { std::lock_guard<std::mutex> g(m_artMutex); m_artCache.clear(); }
+-    FB2K_console_formatter() << "SACD DLNA: indexed " << static_cast<unsigned>(m_sharedCount.load()) << " DSD tracks, UpdateID " << m_updateId;
++    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
++    FB2K_console_formatter() << "SACD DLNA: indexed " << static_cast<unsigned>(m_sharedCount.load()) << " DSD tracks in " << static_cast<unsigned>(elapsedMs) << " ms, UpdateID " << m_updateId;
+ }
+ 
+ void SacdDlnaServer::share_music_library() {
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/dlna_server.h b/dlna_server.h
+--- a/dlna_server.h	2026-09-20 15:31:56.000000000 +0000
++++ b/dlna_server.h	2026-09-21 10:15:33.584299862 +0000
+@@ -3,6 +3,7 @@
+ #include "stdafx.h"
+ #include "dsf_writer.h"
+ #include "status.h"
++#include "library_index.h"
+ 
+ class SacdDlnaServer {
+ public:
+@@ -48,21 +49,11 @@
+         uint32_t albumId = 0;
+     };
+ 
+-    struct Artist {
+-        uint32_t id = 0;
+-        std::string name;
+-        std::string key;
+-        std::vector<uint32_t> albumIds;
+-    };
+-
+-    struct Album {
+-        uint32_t id = 0;
+-        uint32_t artistId = 0;
+-        std::string title;
+-        std::string key;
+-        uint32_t representativeItemId = 0;
+-        std::vector<uint32_t> itemIds;
+-    };
++    // The browse tree (Artists, Albums, Genres, Folders, All Tracks) is built by library_index.h.
++    using Artist = libindex::Artist;
++    using Album = libindex::Album;
++    using Genre = libindex::Genre;
++    using Folder = libindex::Folder;
+ 
+     struct CacheJob {
+         std::condition_variable cv;
+@@ -95,9 +86,18 @@
+     std::vector<Item> m_items;
+     std::vector<Artist> m_artists;
+     std::vector<Album> m_albums;
++    std::vector<Genre> m_genres;
++    std::vector<Folder> m_folders;
++    std::vector<uint32_t> m_albumsByTitle;   // album ids, sorted by title
++    std::vector<uint32_t> m_allTrackIds;     // track ids, sorted by title
++    uint32_t m_folderRootId = 0;             // folder shown as "Folders"
++    // id -> position lookups, rebuilt by publish() (a linear scan per child made large Browse pages O(n^2))
++    std::unordered_map<uint32_t, size_t> m_itemIndex, m_artistIndex, m_albumIndex, m_genreIndex, m_folderIndex;
+     uint32_t m_nextId = 1;
+     uint32_t m_nextArtistId = 1;
+     uint32_t m_nextAlbumId = 1;
++    uint32_t m_nextGenreId = 1;
++    uint32_t m_nextFolderId = 1;
+     uint16_t m_port = 8192;
+     uint32_t m_updateId = 1;
+     std::string m_lastHttpRequest;
+@@ -105,10 +105,12 @@
+     std::mutex m_clientMutex;
+     std::vector<ClientState> m_clients;
+     std::vector<std::thread> m_clientThreads;
++    std::vector<std::thread::id> m_finishedClientThreads;   // guarded by m_clientMutex; reaped by httpLoop
+ 
+     mutable std::mutex m_prefetchMutex;
+     std::vector<std::shared_ptr<abort_callback_impl>> m_prefetchAborters;
+     std::vector<std::thread> m_prefetchThreads;
++    std::vector<std::thread::id> m_finishedPrefetchThreads; // guarded by m_prefetchMutex; reaped by prefetchNextTrack
+     std::set<std::string> m_prefetchKeys;
+ 
+     std::mutex m_cacheMutex;
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/dsf_writer.cpp b/dsf_writer.cpp
+--- a/dsf_writer.cpp	2026-09-20 15:12:36.000000000 +0000
++++ b/dsf_writer.cpp	2026-09-20 17:24:40.234889056 +0000
+@@ -66,13 +66,20 @@
+         m_pending[ch].insert(m_pending[ch].end(), channelBytes[ch].begin(), channelBytes[ch].end());
+     }
+ 
+-    while (m_pending[0].size() >= 4096 && m_pending[1].size() >= 4096) {
+-        writeBytes(m_pending[0].data(), 4096);
+-        writeBytes(m_pending[1].data(), 4096);
+-        m_pending[0].erase(m_pending[0].begin(), m_pending[0].begin() + 4096);
+-        m_pending[1].erase(m_pending[1].begin(), m_pending[1].begin() + 4096);
++    // Write every complete block, then drop all consumed bytes with a single
++    // erase (erasing 4096 bytes from the front per block was O(n) each time).
++    size_t consumed = 0;
++    while (m_pending[0].size() - consumed >= 4096 && m_pending[1].size() - consumed >= 4096) {
++        writeBytes(m_pending[0].data() + consumed, 4096);
++        writeBytes(m_pending[1].data() + consumed, 4096);
++        consumed += 4096;
+         m_bytesPerChannel += 4096;
+     }
++    if (consumed) {
++        m_pending[0].erase(m_pending[0].begin(), m_pending[0].begin() + static_cast<std::ptrdiff_t>(consumed));
++        m_pending[1].erase(m_pending[1].begin(), m_pending[1].begin() + static_cast<std::ptrdiff_t>(consumed));
++    }
++    if (!m_file) throw std::runtime_error("DSF write failed (disk full or file locked?)");
+     m_fileSize = static_cast<uint64_t>(m_file.tellp());
+ }
+ 
+@@ -82,12 +89,18 @@
+     if (m_pending[0].size() != m_pending[1].size())
+         throw std::runtime_error("DSF channel block sizes became unbalanced");
+     if (!m_pending[0].empty()) {
+-        writeBytes(m_pending[0].data(), m_pending[0].size());
+-        writeBytes(m_pending[1].data(), m_pending[1].size());
+-        m_bytesPerChannel += m_pending[0].size();
++        // The DSF format stores whole 4096-byte blocks per channel. The final,
++        // partial block is padded with zero bytes; the fmt chunk's sample count
++        // tells players how many of those samples are valid.
++        m_pending[0].resize(4096, 0);
++        m_pending[1].resize(4096, 0);
++        writeBytes(m_pending[0].data(), 4096);
++        writeBytes(m_pending[1].data(), 4096);
++        m_bytesPerChannel += 4096;
+         m_pending[0].clear();
+         m_pending[1].clear();
+     }
++    if (!m_file) throw std::runtime_error("DSF write failed before finalising the header");
+     m_fileSize = static_cast<uint64_t>(m_file.tellp());
+ 
+     const uint64_t dataChunkSize = 12 + m_bytesPerChannel * m_channels;
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/foo_sacd_dlna.vcxproj b/foo_sacd_dlna.vcxproj
+--- a/foo_sacd_dlna.vcxproj	2026-09-20 15:25:46.000000000 +0000
++++ b/foo_sacd_dlna.vcxproj	2026-09-21 10:23:28.287618509 +0000
+@@ -50,6 +50,7 @@
+   <ItemGroup><ClInclude Include="stdafx.h" /><ClInclude Include="sacd_decode.h" /><ClInclude Include="dsf_writer.h" /><ClInclude Include="dlna_server.h" />
+     <ClInclude Include="config.h" />
+     <ClInclude Include="status.h" />
++    <ClInclude Include="library_index.h" />
+     <ClInclude Include="resource.h" /><ClInclude Include="tooltips.h" /></ItemGroup>
+   <ItemGroup>
+     <ProjectReference Include="..\..\libPPUI\libPPUI.vcxproj"><Project>{7729EB82-4069-4414-964B-AD399091A03F}</Project></ProjectReference>
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/library_index.h b/library_index.h
+--- a/library_index.h	1970-01-01 00:00:00.000000000 +0000
++++ b/library_index.h	2026-09-21 10:23:54.737372658 +0000
+@@ -0,0 +1,278 @@
++#pragma once
++// Library index behind the UPnP ContentDirectory tree: Artists, Albums, Genres,
++// Folders and All Tracks. Standard C++ only (no foobar2000 SDK, no Windows), so it
++// can be unit-tested anywhere: see tests/library_index_selftest.
++
++#include <algorithm>
++#include <cctype>
++#include <cstdint>
++#include <cstdlib>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++namespace libindex {
++
++// One shared track, as far as the index is concerned.
++struct Track {
++    uint32_t id = 0;
++    std::string title, artist, albumArtist, album, genre, trackNumber, discNumber;
++    // UTF-8 native path ("D:\Music\Album\01.dsf", "\\nas\share\a.dsf"). Empty when the
++    // track is not a plain local file; such tracks are left out of the Folders view.
++    std::string nativePath;
++};
++
++struct Artist {
++    uint32_t id = 0;
++    std::string name;
++    std::string key;
++    std::vector<uint32_t> albumIds;
++};
++
++struct Album {
++    uint32_t id = 0;
++    uint32_t artistId = 0;
++    std::string title;
++    std::string key;
++    uint32_t representativeItemId = 0;
++    std::vector<uint32_t> itemIds;
++};
++
++struct Genre {
++    uint32_t id = 0;
++    std::string name;
++    std::string key;
++    std::vector<uint32_t> itemIds;
++};
++
++struct Folder {
++    uint32_t id = 0;
++    uint32_t parentId = 0;
++    std::string name;
++    std::vector<uint32_t> folderIds;   // sub-folders, sorted by name
++    std::vector<uint32_t> itemIds;     // tracks directly inside, sorted by disc/track/title
++};
++
++// Object ids are never reused across rebuilds: a stale id held by a renderer
++// resolves to nothing instead of silently pointing at different content.
++struct NextIds {
++    uint32_t artist = 1, album = 1, genre = 1, folder = 1;
++};
++
++struct Index {
++    std::vector<Artist> artists;                // sorted by name
++    std::vector<Album> albums;                  // sorted by artist, then title
++    std::vector<Genre> genres;                  // sorted by name
++    std::vector<Folder> folders;                // creation order; folders[0] is the virtual root
++    std::vector<uint32_t> albumsByTitle;        // album ids sorted by title, then artist
++    std::vector<uint32_t> allTracks;            // track ids sorted by title, then artist, album
++    uint32_t folderRoot = 0;                    // id of the folder shown as "Folders" (single-child chains collapsed)
++    std::vector<uint32_t> trackArtistId;        // parallel to the input tracks
++    std::vector<uint32_t> trackAlbumId;         // parallel to the input tracks
++    std::unordered_map<uint32_t, size_t> artistIndex, albumIndex, genreIndex, folderIndex;   // id -> position
++};
++
++inline std::string lower(std::string s) {
++    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++    return s;
++}
++
++// Case-insensitive ordering on bytes; a shorter string that is a prefix sorts first.
++inline int ciCompare(const std::string& a, const std::string& b) {
++    const size_t n = a.size() < b.size() ? a.size() : b.size();   // no std::min: windows.h min/max macros
++    for (size_t i = 0; i < n; ++i) {
++        const int ca = std::tolower(static_cast<unsigned char>(a[i]));
++        const int cb = std::tolower(static_cast<unsigned char>(b[i]));
++        if (ca != cb) return ca < cb ? -1 : 1;
++    }
++    return a.size() == b.size() ? 0 : (a.size() < b.size() ? -1 : 1);
++}
++
++// "3", "3/12" -> 3. Anything not starting with a digit sorts last.
++inline unsigned numberPrefix(const std::string& s) {
++    const char* p = s.c_str();
++    while (*p == ' ' || *p == '\t') ++p;
++    if (*p < '0' || *p > '9') return UINT32_MAX;
++    return static_cast<unsigned>(std::strtoul(p, nullptr, 10));
++}
++
++inline Index build(const std::vector<Track>& tracks, NextIds& next) {
++    Index idx;
++    const size_t n = tracks.size();
++    idx.trackArtistId.assign(n, 0);
++    idx.trackAlbumId.assign(n, 0);
++
++    // ---- group into artists, albums, genres (hash lookups, not linear scans) ----
++    std::unordered_map<std::string, size_t> artistByKey, albumByKey, genreByKey;
++    for (size_t i = 0; i < n; ++i) {
++        const Track& t = tracks[i];
++
++        // Albums live under the ALBUM artist when tagged, so a compilation does not
++        // split into one pseudo-album per track artist.
++        const std::string& groupArtist = !t.albumArtist.empty() ? t.albumArtist : t.artist;
++        const std::string artistKey = lower(groupArtist);
++        auto ait = artistByKey.find(artistKey);
++        if (ait == artistByKey.end()) {
++            Artist a; a.id = next.artist++; a.name = groupArtist; a.key = artistKey;
++            idx.artists.push_back(std::move(a));
++            ait = artistByKey.emplace(artistKey, idx.artists.size() - 1).first;
++        }
++        Artist& artist = idx.artists[ait->second];
++        idx.trackArtistId[i] = artist.id;
++
++        const std::string albumTitleKey = lower(t.album);
++        const std::string albumMapKey = std::to_string(artist.id) + '\x1f' + albumTitleKey;
++        auto bit = albumByKey.find(albumMapKey);
++        if (bit == albumByKey.end()) {
++            Album a; a.id = next.album++; a.artistId = artist.id; a.title = t.album; a.key = albumTitleKey; a.representativeItemId = t.id;
++            idx.albums.push_back(std::move(a));
++            bit = albumByKey.emplace(albumMapKey, idx.albums.size() - 1).first;
++            artist.albumIds.push_back(idx.albums.back().id);
++        }
++        Album& album = idx.albums[bit->second];
++        idx.trackAlbumId[i] = album.id;
++        album.itemIds.push_back(t.id);
++
++        // Only the first genre value reaches the index; an empty tag becomes "Unknown Genre".
++        const std::string genreName = t.genre.empty() ? std::string("Unknown Genre") : t.genre;
++        const std::string genreKey = lower(genreName);
++        auto git = genreByKey.find(genreKey);
++        if (git == genreByKey.end()) {
++            Genre g; g.id = next.genre++; g.name = genreName; g.key = genreKey;
++            idx.genres.push_back(std::move(g));
++            git = genreByKey.emplace(genreKey, idx.genres.size() - 1).first;
++        }
++        idx.genres[git->second].itemIds.push_back(t.id);
++    }
++
++    // ---- sort keys ----
++    struct Key { unsigned disc, track; const Track* t; };
++    std::unordered_map<uint32_t, Key> keyOf;
++    keyOf.reserve(n);
++    for (const Track& t : tracks) keyOf.emplace(t.id, Key{ numberPrefix(t.discNumber), numberPrefix(t.trackNumber), &t });
++
++    // disc, track number, title, id: the order an album is played in.
++    const auto albumOrder = [&](uint32_t a, uint32_t b) {
++        const Key& ka = keyOf.at(a); const Key& kb = keyOf.at(b);
++        if (ka.disc != kb.disc) return ka.disc < kb.disc;
++        if (ka.track != kb.track) return ka.track < kb.track;
++        const int c = ciCompare(ka.t->title, kb.t->title);
++        return c != 0 ? c < 0 : a < b;
++    };
++
++    // ---- artists, albums ----
++    std::sort(idx.artists.begin(), idx.artists.end(), [](const Artist& a, const Artist& b) {
++        const int c = ciCompare(a.name, b.name);
++        return c != 0 ? c < 0 : a.id < b.id;
++    });
++    for (size_t i = 0; i < idx.artists.size(); ++i) idx.artistIndex.emplace(idx.artists[i].id, i);
++    const auto artistName = [&](uint32_t id) -> const std::string& {
++        static const std::string empty;
++        const auto it = idx.artistIndex.find(id);
++        return it == idx.artistIndex.end() ? empty : idx.artists[it->second].name;
++    };
++
++    std::sort(idx.albums.begin(), idx.albums.end(), [&](const Album& a, const Album& b) {
++        int c = ciCompare(artistName(a.artistId), artistName(b.artistId));
++        if (c == 0) c = ciCompare(a.title, b.title);
++        return c != 0 ? c < 0 : a.id < b.id;
++    });
++    for (size_t i = 0; i < idx.albums.size(); ++i) idx.albumIndex.emplace(idx.albums[i].id, i);
++    const auto albumOf = [&](uint32_t id) -> const Album& { return idx.albums[idx.albumIndex.at(id)]; };
++
++    for (Album& album : idx.albums) std::sort(album.itemIds.begin(), album.itemIds.end(), albumOrder);
++    for (Artist& artist : idx.artists) std::sort(artist.albumIds.begin(), artist.albumIds.end(), [&](uint32_t a, uint32_t b) {
++        const int c = ciCompare(albumOf(a).title, albumOf(b).title);
++        return c != 0 ? c < 0 : a < b;
++    });
++
++    // All albums by title (then artist): the flat "Albums" view.
++    idx.albumsByTitle.reserve(idx.albums.size());
++    for (const Album& a : idx.albums) idx.albumsByTitle.push_back(a.id);
++    std::sort(idx.albumsByTitle.begin(), idx.albumsByTitle.end(), [&](uint32_t a, uint32_t b) {
++        const Album& x = albumOf(a); const Album& y = albumOf(b);
++        int c = ciCompare(x.title, y.title);
++        if (c == 0) c = ciCompare(artistName(x.artistId), artistName(y.artistId));
++        return c != 0 ? c < 0 : a < b;
++    });
++
++    // ---- genres: by name; tracks by artist, album, disc, track, title ----
++    std::sort(idx.genres.begin(), idx.genres.end(), [](const Genre& a, const Genre& b) {
++        const int c = ciCompare(a.name, b.name);
++        return c != 0 ? c < 0 : a.id < b.id;
++    });
++    for (size_t i = 0; i < idx.genres.size(); ++i) idx.genreIndex.emplace(idx.genres[i].id, i);
++    const auto genreOrder = [&](uint32_t a, uint32_t b) {
++        const Track& x = *keyOf.at(a).t; const Track& y = *keyOf.at(b).t;
++        int c = ciCompare(x.artist, y.artist);
++        if (c == 0) c = ciCompare(x.album, y.album);
++        if (c != 0) return c < 0;
++        return albumOrder(a, b);
++    };
++    for (Genre& g : idx.genres) std::sort(g.itemIds.begin(), g.itemIds.end(), genreOrder);
++
++    // ---- folders: a tree mirroring the file system ----
++    {
++        Folder root; root.id = next.folder++;
++        idx.folders.push_back(std::move(root));
++        std::unordered_map<std::string, size_t> childByKey;   // "<parentId>\x1f<lower(name)>" -> position
++
++        for (const Track& t : tracks) {
++            if (t.nativePath.empty()) continue;
++            std::vector<std::string> parts;
++            std::string cur;
++            for (const char c : t.nativePath) {
++                if (c == '\\' || c == '/') { if (!cur.empty()) parts.push_back(cur); cur.clear(); }
++                else cur.push_back(c);
++            }
++            if (!cur.empty()) parts.push_back(cur);
++            if (parts.empty()) continue;
++
++            size_t node = 0;
++            for (size_t k = 0; k + 1 < parts.size(); ++k) {   // every part except the file name
++                const std::string key = std::to_string(idx.folders[node].id) + '\x1f' + lower(parts[k]);
++                auto it = childByKey.find(key);
++                if (it == childByKey.end()) {
++                    Folder f; f.id = next.folder++; f.parentId = idx.folders[node].id; f.name = parts[k];
++                    idx.folders.push_back(std::move(f));
++                    const size_t pos = idx.folders.size() - 1;
++                    idx.folders[node].folderIds.push_back(idx.folders[pos].id);
++                    it = childByKey.emplace(key, pos).first;
++                }
++                node = it->second;
++            }
++            idx.folders[node].itemIds.push_back(t.id);
++        }
++
++        for (size_t i = 0; i < idx.folders.size(); ++i) idx.folderIndex.emplace(idx.folders[i].id, i);
++        for (Folder& f : idx.folders) {
++            std::sort(f.folderIds.begin(), f.folderIds.end(), [&](uint32_t a, uint32_t b) {
++                const int c = ciCompare(idx.folders[idx.folderIndex.at(a)].name, idx.folders[idx.folderIndex.at(b)].name);
++                return c != 0 ? c < 0 : a < b;
++            });
++            std::sort(f.itemIds.begin(), f.itemIds.end(), albumOrder);
++        }
++
++        // "Folders" starts at the first folder that actually branches or holds tracks,
++        // so a library under D:\Music\DSD does not open with three single-entry levels.
++        size_t r = 0;
++        while (idx.folders[r].itemIds.empty() && idx.folders[r].folderIds.size() == 1)
++            r = idx.folderIndex.at(idx.folders[r].folderIds[0]);
++        idx.folderRoot = idx.folders[r].id;
++    }
++
++    // ---- all tracks: by title, then artist, album ----
++    idx.allTracks.reserve(n);
++    for (const Track& t : tracks) idx.allTracks.push_back(t.id);
++    std::sort(idx.allTracks.begin(), idx.allTracks.end(), [&](uint32_t a, uint32_t b) {
++        const Track& x = *keyOf.at(a).t; const Track& y = *keyOf.at(b).t;
++        int c = ciCompare(x.title, y.title);
++        if (c == 0) c = ciCompare(x.artist, y.artist);
++        if (c == 0) c = ciCompare(x.album, y.album);
++        return c != 0 ? c < 0 : a < b;
++    });
++
++    return idx;
++}
++
++}  // namespace libindex
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/preferences.cpp b/preferences.cpp
+--- a/preferences.cpp	2026-09-20 15:12:36.000000000 +0000
++++ b/preferences.cpp	2026-09-20 17:24:40.237823294 +0000
+@@ -236,21 +236,21 @@
+ 
+     void OnHelp(UINT, int, CWindow) {
+         const char* msg =
+-            "SACD DLNA\\n\\n"
+-            "This component exposes native DSD music from foobar2000 over UPnP/DLNA.\\n\\n"
+-            "Requirements:\\n"
+-            "- foobar2000 x64\\n"
+-            "- Super Audio CD Decoder (foo_input_sacd.dll) for SACD ISO\\n"
+-            "- DSD64, DSD128 or DSD256 source material\\n\\n"
+-            "DSD is kept native for the network stream. No DSD-to-PCM conversion is performed by this component.\\n\\n"
+-            "Music Library sharing uses foobar2000's Media Library and exposes DSD-capable files (ISO/DSF/DFF) grouped as Artist > Album > Track. Album art is served through UPnP when available.\\n\\n"
+-            "Status: BROADCASTING means SSDP/server discovery is active. TRANSMITTING means a renderer is actually downloading audio. TX is the measured TCP transmit rate. The T+A SDX state shows detected renderer identity and active-client correlation when possible.\\n\\n"
+-            "SACD ISO: the installed foo_input_sacd decoder supplies DSD through the public foobar2000 decoder interface; a persistent DSF cache is then delivered over HTTP/DLNA. Native DSF/DFF files are served directly.\\n\\n"
+-            "Stability Mode separates SACD conversion/cache work from network delivery. The pre-buffer/read-ahead is intended to absorb short disk/network fluctuations; it cannot compensate for a sustained network throughput deficit.\\n\\n"
+-            "Diagnostics: enable Verbose network logging to trace SSDP discovery, T+A renderer detection, ConnectionManager protocol negotiation, Browse/BrowseMetadata requests, media GET/Range requests, cache hits/misses, errors and stream termination in the foobar2000 Console.\\n\\n"
+-            "BrowseMetadata is handled separately from BrowseDirectChildren. StartingIndex and RequestedCount are honoured, and GetSystemUpdateID is exposed for Media Library change tracking.\\n\\n"
+-            "Gapless note: the server preserves track order and exact duration metadata, but gapless transition timing ultimately depends on the renderer/firmware because this component is a MediaServer rather than the SDX transport controller.\\n\\n"
+-            "For the full field-by-field reference, network examples and troubleshooting, see HELP.md, EXAMPLES.md and NETWORK_REQUIREMENTS.md in the project repository.\\n\\n"
++            "SACD DLNA\n\n"
++            "This component exposes native DSD music from foobar2000 over UPnP/DLNA.\n\n"
++            "Requirements:\n"
++            "- foobar2000 x64\n"
++            "- Super Audio CD Decoder (foo_input_sacd.dll) for SACD ISO\n"
++            "- DSD64, DSD128 or DSD256 source material\n\n"
++            "DSD is kept native for the network stream. No DSD-to-PCM conversion is performed by this component.\n\n"
++            "Music Library sharing uses foobar2000's Media Library and exposes DSD-capable files (ISO/DSF/DFF) grouped as Artist > Album > Track. Album art is served through UPnP when available.\n\n"
++            "Status: BROADCASTING means SSDP/server discovery is active. TRANSMITTING means a renderer is actually downloading audio. TX is the measured TCP transmit rate. The T+A SDX state shows detected renderer identity and active-client correlation when possible.\n\n"
++            "SACD ISO: the installed foo_input_sacd decoder supplies DSD through the public foobar2000 decoder interface; a persistent DSF cache is then delivered over HTTP/DLNA. Native DSF/DFF files are served directly.\n\n"
++            "Stability Mode separates SACD conversion/cache work from network delivery. The pre-buffer/read-ahead is intended to absorb short disk/network fluctuations; it cannot compensate for a sustained network throughput deficit.\n\n"
++            "Diagnostics: enable Verbose network logging to trace SSDP discovery, T+A renderer detection, ConnectionManager protocol negotiation, Browse/BrowseMetadata requests, media GET/Range requests, cache hits/misses, errors and stream termination in the foobar2000 Console.\n\n"
++            "BrowseMetadata is handled separately from BrowseDirectChildren. StartingIndex and RequestedCount are honoured, and GetSystemUpdateID is exposed for Media Library change tracking.\n\n"
++            "Gapless note: the server preserves track order and exact duration metadata, but gapless transition timing ultimately depends on the renderer/firmware because this component is a MediaServer rather than the SDX transport controller.\n\n"
++            "For the full field-by-field reference, network examples and troubleshooting, see HELP.md, EXAMPLES.md and NETWORK_REQUIREMENTS.md in the project repository.\n\n"
+             "This is an alpha development build. Protocol negotiation is renderer-aware, but final compatibility and gapless behaviour must be verified against the exact T+A SDX 3100 HV firmware in use.";
+         popup_message::g_show(msg, "foo_sacd_dlna Help");
+     }
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/sacd_decode.cpp b/sacd_decode.cpp
+--- a/sacd_decode.cpp	2026-09-20 15:12:36.000000000 +0000
++++ b/sacd_decode.cpp	2026-09-20 17:42:06.865241699 +0000
+@@ -1,5 +1,6 @@
+ #include "stdafx.h"
+ #include "sacd_decode.h"
++#include <array>
+ 
+ namespace {
+ 
+@@ -7,15 +8,21 @@
+     return name && _stricmp(name, "Super Audio CD Decoder") == 0;
+ }
+ 
+-static int32_t toInt24(audio_sample sample) {
+-    // foo_input_sacd with input_flag_dop exposes DoP as 24-bit PCM carried
+-    // in foobar2000's normalized audio_sample representation. Use the SDK's
+-    // exact conversion helper so x64 (double audio_sample) retains all bits.
+-    uint8_t bytes[3]{};
+-    audio_math::convert_to_int24(&sample, 1, bytes, 1.0);
+-    return (static_cast<int32_t>(bytes[0]) |
+-            (static_cast<int32_t>(bytes[1]) << 8) |
+-            (static_cast<int32_t>(bytes[2]) << 16));
++// DoP carries the OLDEST DSD bit in the most significant bit of each byte
++// (MSB first). A DSF file declares "bits per sample = 1", which the DSF
++// specification defines as LSB first, so every byte must be bit-reversed on
++// its way into the file.
++static const std::array<uint8_t, 256>& bitReverseTable() {
++    static const std::array<uint8_t, 256> table = [] {
++        std::array<uint8_t, 256> t{};
++        for (unsigned i = 0; i < 256; ++i) {
++            unsigned v = i, r = 0;
++            for (unsigned b = 0; b < 8; ++b) { r = (r << 1) | (v & 1u); v >>= 1; }
++            t[i] = static_cast<uint8_t>(r);
++        }
++        return t;
++    }();
++    return table;
+ }
+ 
+ 
+@@ -35,6 +42,7 @@
+ 
+ }
+ 
++// BEGIN-UNPACKDOP
+ bool SacdDecoder::unpackDop(const audio_chunk& chunk,
+                       std::vector<std::vector<uint8_t>>& out,
+                       uint32_t& dsdRate) {
+@@ -50,25 +58,37 @@
+ 
+     const audio_sample* samples = chunk.get_data();
+     const size_t count = chunk.get_sample_count();
++
++    // foo_input_sacd with input_flag_dop exposes DoP as 24-bit PCM carried in
++    // foobar2000's normalized audio_sample. Convert the whole chunk with ONE call
++    // (SIMD path) instead of one call per sample, which was the hot spot for
++    // DSD256 (about 1.4 million calls per second of audio). Output is packed
++    // little-endian 24-bit, interleaved L,R,L,R...: byte 0 = low 8 bits,
++    // byte 1 = middle 8 bits, byte 2 = DoP marker.
++    std::vector<uint8_t> raw(count * 2 * 3 + 4);
++    audio_math::convert_to_int24(samples, count * 2, raw.data(), 1.0);
++
+     out.assign(2, {});
+-    out[0].reserve(count * 2);
+-    out[1].reserve(count * 2);
++    out[0].resize(count * 2);
++    out[1].resize(count * 2);
++    const auto& rev = bitReverseTable();
+ 
+     for (size_t i = 0; i < count; ++i) {
+-        const int32_t l = toInt24(samples[i * 2 + 0]);
+-        const int32_t r = toInt24(samples[i * 2 + 1]);
+-
+-        const uint8_t lm = static_cast<uint8_t>((static_cast<uint32_t>(l) >> 16) & 0xFF);
+-        const uint8_t rm = static_cast<uint8_t>((static_cast<uint32_t>(r) >> 16) & 0xFF);
++        const uint8_t* l = raw.data() + i * 6;
++        const uint8_t* r = l + 3;
++        const uint8_t lm = l[2], rm = r[2];
+         if ((lm != 0x05 && lm != 0xFA) || (rm != 0x05 && rm != 0xFA)) return false;
+ 
+-        out[0].push_back(static_cast<uint8_t>(l & 0xFF));
+-        out[0].push_back(static_cast<uint8_t>((static_cast<uint32_t>(l) >> 8) & 0xFF));
+-        out[1].push_back(static_cast<uint8_t>(r & 0xFF));
+-        out[1].push_back(static_cast<uint8_t>((static_cast<uint32_t>(r) >> 8) & 0xFF));
++        // Bits 15..8 of the DoP word are the OLDER 8 DSD samples and bits 7..0
++        // the newer 8, so the middle byte must be written first.
++        out[0][i * 2 + 0] = rev[l[1]];
++        out[0][i * 2 + 1] = rev[l[0]];
++        out[1][i * 2 + 0] = rev[r[1]];
++        out[1][i * 2 + 1] = rev[r[0]];
+     }
+     return true;
+ }
++// END-UNPACKDOP
+ 
+ input_entry::ptr SacdDecoder::findFooSacd(const char* path) {
+     pfc::list_t<input_entry::ptr> inputs;
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/browse_tree_selftest/README.md b/tests/browse_tree_selftest/README.md
+--- a/tests/browse_tree_selftest/README.md	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/browse_tree_selftest/README.md	2026-09-21 10:21:47.871556973 +0000
+@@ -0,0 +1,5 @@
++# Browse tree self-test
++`run.sh` compiles the plugin's real `browseDidl()` and `soapActionName()` (extracted from `dlna_server.cpp` when it runs)
++against a stub server, then crawls the whole tree like a renderer: root -> Artists / Albums / Genres / Folders / All Tracks.
++It checks well-formed DIDL-Lite, `childCount` == `TotalMatches`, `parentID` links, that paging equals the full listing,
++that every view reaches every track, that invalid ids and `RequestedCount = 0xFFFFFFFF` are handled, and SOAP action recognition.
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/browse_tree_selftest/crawl.py b/tests/browse_tree_selftest/crawl.py
+--- a/tests/browse_tree_selftest/crawl.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/browse_tree_selftest/crawl.py	2026-09-21 10:21:47.869073382 +0000
+@@ -0,0 +1,90 @@
++import subprocess, xml.etree.ElementTree as ET, sys
++NS = {'d':'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/','dc':'http://purl.org/dc/elements/1.1/','upnp':'urn:schemas-upnp-org:metadata-1-0/upnp/'}
++fails = 0; checks = 0
++def check(c, msg):
++    global fails, checks; checks += 1
++    if not c: fails += 1; print("FAIL:", msg)
++def browse(oid, flag='children', start=0, count=0):
++    out = subprocess.run(['./harness', oid, flag, str(start), str(count)], capture_output=True, text=True, check=True).stdout
++    head, _, didl = out.partition('\n'); nr, tm = map(int, head.split())
++    root = ET.fromstring(didl)                       # falha se o XML nao for bem formado
++    kids = []
++    for e in root:
++        tag = e.tag.split('}')[1]
++        kids.append(dict(kind=tag, id=e.get('id'), parent=e.get('parentID'), childCount=e.get('childCount'),
++                         title=e.find('dc:title', NS).text, cls=e.find('upnp:class', NS).text,
++                         creator=(e.find('dc:creator', NS).text if e.find('dc:creator', NS) is not None else None)))
++    return nr, tm, kids
++def full(oid):
++    nr, tm, kids = browse(oid); check(nr == tm == len(kids), f"{oid}: NumberReturned/TotalMatches/len {nr}/{tm}/{len(kids)}"); return kids
++def paged(oid, size):
++    got, start = [], 0
++    while True:
++        nr, tm, kids = browse(oid, 'children', start, size); got += kids
++        if not kids or start + size >= tm: break
++        start += size
++    return got
++
++# ---------- raiz
++root = full('0')
++check([k['title'] for k in root] == ['Artists','Albums','Genres','Folders','All Tracks'], f"raiz: {[k['title'] for k in root]}")
++check(all(k['kind'] == 'container' and k['parent'] == '0' for k in root), "filhos da raiz sao containers com parentID=0")
++m = browse('0', 'meta')[2]; check(len(m) == 1 and m[0]['childCount'] == '5' and m[0]['parent'] == '-1', "metadata da raiz")
++
++# ---------- percorrer tudo
++tracks_via = {}
++def crawl(oid, via, seen_containers):
++    kids = full(oid)
++    for k in kids:
++        check(k['parent'] == oid, f"parentID de {k['id']} deveria ser {oid}, veio {k['parent']}")
++    for size in (7, 100):                                  # paginacao == listagem completa
++        check([k['id'] for k in paged(oid, size)] == [k['id'] for k in kids], f"paginacao ({size}) de {oid} difere da completa")
++    for k in kids:
++        if k['kind'] == 'container':
++            nr, tm, sub = browse(k['id'])
++            check(int(k['childCount']) == tm, f"childCount de {k['id']} ({k['childCount']}) != TotalMatches ({tm})")
++            md = browse(k['id'], 'meta')
++            check(md[0] == 1 and md[2][0]['id'] == k['id'] and md[2][0]['title'] == k['title'], f"metadata de {k['id']}")
++            if k['id'] in seen_containers: continue
++            seen_containers.add(k['id']); crawl(k['id'], via, seen_containers)
++        else:
++            tracks_via.setdefault(via, set()).add(k['id'])
++for entry in root:
++    crawl(entry['id'], entry['title'], set())
++
++allids = tracks_via['All Tracks']
++check(len(allids) == 2406, f"All Tracks devolve {len(allids)} faixas distintas (esperadas 2406)")
++for v in ('Artists','Albums','Genres','Folders'):
++    check(tracks_via[v] == allids, f"{v}: alcanca {len(tracks_via[v])} faixas, difere de All Tracks")
++print(f"faixas alcancaveis por vista: " + ", ".join(f"{k}={len(v)}" for k, v in tracks_via.items()))
++
++# ---------- regras especificas
++artists = full('artists'); check(len(artists) == 40 + 1 + 1 + 0 - 0 + 0 - 0 or len(artists) == 42, f"n. de artistas {len(artists)}")
++check('Various Artists' in [a['title'] for a in artists], "compilacao agrupada em 'Various Artists'")
++albums = full('albums'); titles = [a['title'] for a in albums]
++check(titles == sorted(titles, key=str.lower), "Albums ordenados por titulo")
++comp = [a for a in albums if a['title'] == 'Best of & <More>']; check(len(comp) == 1 and comp[0]['creator'] == 'Various Artists', "album da compilacao tem dc:creator e o XML escapa & < >")
++va = next(a for a in artists if a['title'] == 'Various Artists'); va_albums = full(va['id'])
++check(all(a['creator'] is None for a in va_albums), "albuns dentro de um artista nao repetem o criador")
++genres = full('genres'); check([g['title'] for g in genres] == sorted([g['title'] for g in genres], key=str.lower) and 'Unknown Genre' in [g['title'] for g in genres], f"generos: {[g['title'] for g in genres]}")
++folders = full('folders'); check([f['title'] for f in folders] == ['D:', 'E:'], f"raiz de Folders: {[f['title'] for f in folders]}")
++d = folders[0]; dkids = full(d['id']); check([k['title'] for k in dkids] == ['Music'], f"D: -> {[k['title'] for k in dkids]}")
++music = full(dkids[0]['id']); check([k['title'] for k in music] == ['DSD', 'ISO'], f"Music -> {[k['title'] for k in music]}")
++iso = full(music[1]['id']); check([k['title'] for k in iso] == ['Iso 1','Iso 2','Iso 3'] and all(k['kind']=='item' for k in iso), "pasta ISO: 3 faixas por ordem")
++md = browse(music[1]['id'], 'meta')[2][0]; check(md['parent'] == dkids[0]['id'], "parentID de uma subpasta")
++md = browse(folders[0]['id'], 'meta')[2][0]; check(md['parent'] == 'folders', "parentID de pasta de topo e 'folders'")
++tr = next(k for k in full('artist-1' if False else full('artists')[0]['id']))       # 1.o album do 1.o artista
++alltr = full('alltracks'); t1 = [k['title'] for k in alltr]; check(t1 == sorted(t1, key=str.lower), "All Tracks ordenadas por titulo")
++
++# ---------- paginacao: casos limite
++nr, tm, k = browse('alltracks', 'children', 5, 0xFFFFFFFF); check(tm == 2406 and nr == 2401, f"RequestedCount=0xFFFFFFFF: {nr}/{tm}")
++nr, tm, k = browse('alltracks', 'children', 4294967295, 4294967295); check(nr == 0 and tm == 2406, f"StartingIndex enorme: {nr}/{tm}")
++nr, tm, k = browse('alltracks', 'children', 2400, 100); check(nr == 6 and tm == 2406, f"ultima pagina: {nr}/{tm}")
++nr, tm, k = browse('alltracks', 'children', 0, 1); check(nr == 1 and tm == 2406, f"pagina de 1: {nr}/{tm}")
++for bad in ('nope', 'artist-99999', 'album-abc', 'genre-', 'folder-0', 'track-999999', 'artist-', ''):
++    nr, tm, k = browse(bad); check(nr == 0 and tm == 0, f"objectId invalido {bad!r} -> {nr}/{tm}")
++    nr, tm, k = browse(bad, 'meta'); check(nr == 0 and tm == 0, f"metadata de objectId invalido {bad!r}")
++# item: metadata e filhos de uma faixa
++tid = alltr[0]['id']; nr, tm, k = browse(tid, 'meta'); check(nr == 1 and k[0]['kind'] == 'item', "metadata de faixa")
++print(f"\n{checks} verificacoes, {fails} falhas")
++sys.exit(1 if fails else 0)
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/browse_tree_selftest/harness.cpp b/tests/browse_tree_selftest/harness.cpp
+--- a/tests/browse_tree_selftest/harness.cpp	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/browse_tree_selftest/harness.cpp	2026-09-21 10:21:47.869045616 +0000
+@@ -0,0 +1,82 @@
++#include <algorithm>
++#include <climits>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <unordered_map>
++#include <vector>
++#include <strings.h>
++#define _stricmp strcasecmp
++#include "library_index.h"
++#include "dsdtrack.inc"
++
++struct metadb_handle_ptr {};
++typedef uint32_t t_uint32;
++namespace { 
++#include "consts.inc"
++std::string mimeForExtension(const std::string&) { return "audio/x-dsf"; }
++std::string formatDuration(double s) { char b[32]; std::snprintf(b, sizeof b, "0:%02d:%02d.000", (int)s / 60, (int)s % 60); return b; }
++}
++
++class SacdDlnaServer {
++public:
++    struct Item {
++        uint32_t id = 0; std::string sourcePath, sourceExt; uint64_t sourceSize = 0; uint32_t sourceSampleRate = 0, sourceChannels = 0, sourceBitsPerSample = 0;
++        int64_t sourceWriteTime = 0; t_uint32 subsong = 0; metadb_handle_ptr handle; DsdTrack track; std::wstring cachePath; uint32_t artistId = 0, albumId = 0;
++    };
++    using Artist = libindex::Artist; using Album = libindex::Album; using Genre = libindex::Genre; using Folder = libindex::Folder;
++
++    std::string browseDidl(const std::string& objectId, bool metadataOnly, unsigned startingIndex, unsigned requestedCount, unsigned& numberReturned, unsigned& totalMatches) const;
++
++    // Replica exacta do bloco de "commit" do publish()
++    void load(std::vector<Item> newItems, const std::vector<libindex::Track>& tracks) {
++        libindex::NextIds nextIds; libindex::Index index = libindex::build(tracks, nextIds);
++        for (size_t i = 0; i < newItems.size(); ++i) { newItems[i].artistId = index.trackArtistId[i]; newItems[i].albumId = index.trackAlbumId[i]; }
++        std::lock_guard<std::mutex> g(m_mutex);
++        m_items = std::move(newItems);
++        m_artists = std::move(index.artists); m_albums = std::move(index.albums); m_genres = std::move(index.genres); m_folders = std::move(index.folders);
++        m_albumsByTitle = std::move(index.albumsByTitle); m_allTrackIds = std::move(index.allTracks); m_folderRootId = index.folderRoot;
++        m_artistIndex = std::move(index.artistIndex); m_albumIndex = std::move(index.albumIndex); m_genreIndex = std::move(index.genreIndex); m_folderIndex = std::move(index.folderIndex);
++        m_itemIndex.clear(); for (size_t i = 0; i < m_items.size(); ++i) m_itemIndex.emplace(m_items[i].id, i);
++    }
++private:
++    std::string localAddress() const { return "10.0.0.5"; }
++    std::string chooseRendererMime(const std::string& m) const { return m; }
++    std::string chooseRendererProtocolInfo(const std::string& m) const { return "http-get:*:" + m + ":*"; }
++    static std::string xmlEscape(const std::string& s) { std::string o; for (char c : s) { switch (c) { case '&': o += "&amp;"; break; case '<': o += "&lt;"; break; case '>': o += "&gt;"; break; case '"': o += "&quot;"; break; default: o += c; } } return o; }
++    mutable std::mutex m_mutex; uint16_t m_port = 8192; uint32_t m_updateId = 1;
++    std::vector<Item> m_items; std::vector<Artist> m_artists; std::vector<Album> m_albums; std::vector<Genre> m_genres; std::vector<Folder> m_folders;
++    std::vector<uint32_t> m_albumsByTitle, m_allTrackIds; uint32_t m_folderRootId = 0;
++    std::unordered_map<uint32_t, size_t> m_itemIndex, m_artistIndex, m_albumIndex, m_genreIndex, m_folderIndex;
++};
++
++#include "browse_real.inc"
++
++int main(int argc, char** argv) {
++    // biblioteca sintetica: 40 artistas x 5 albuns x 12 faixas, generos e pastas variados (+ 1 compilacao, 1 ISO)
++    std::vector<SacdDlnaServer::Item> items; std::vector<libindex::Track> tracks; uint32_t id = 1;
++    const char* genresList[] = { "Jazz", "Rock", "Classical", "Blues", "" };
++    auto add = [&](const std::string& title, const std::string& artist, const std::string& album, const std::string& genre, int tn, int dn, const std::string& path, const std::string& albumArtist = "") {
++        SacdDlnaServer::Item x; x.id = id; x.sourceExt = ".dsf"; x.track.title = title; x.track.artist = artist; x.track.album = album; x.track.genre = genre;
++        x.track.dsdRate = 2822400; x.track.duration = 200; x.track.fileSize = 1000; x.track.trackNumber = std::to_string(tn); items.push_back(x);
++        libindex::Track t; t.id = id; t.title = title; t.artist = artist; t.album = album; t.albumArtist = albumArtist; t.genre = genre;
++        t.trackNumber = std::to_string(tn); t.discNumber = std::to_string(dn); t.nativePath = path; tracks.push_back(t); ++id; };
++    for (int a = 0; a < 40; ++a) for (int al = 0; al < 5; ++al) for (int t = 1; t <= 12; ++t) {
++        char artist[32], album[32], title[40], path[128];
++        std::snprintf(artist, sizeof artist, "Artist %02d", a); std::snprintf(album, sizeof album, "Album %d", al);
++        std::snprintf(title, sizeof title, "Track %02d of A%02d/%d", t, a, al);
++        std::snprintf(path, sizeof path, "D:\\Music\\DSD\\%s\\%s\\%02d.dsf", artist, album, t);
++        add(title, artist, album, genresList[(a + al) % 5], t, 1, path);
++    }
++    for (int t = 1; t <= 3; ++t) add("Comp " + std::to_string(t), "Guest " + std::to_string(t), "Best of & <More>", "Rock", t, 1, "E:\\Comp\\c" + std::to_string(t) + ".dsf", "Various Artists");
++    for (int t = 1; t <= 3; ++t) add("Iso " + std::to_string(t), "Orchestra", "Symphony", "", t, 1, "D:\\Music\\ISO\\sym.iso");
++    SacdDlnaServer s; s.load(items, tracks);
++
++    if (argc < 5) { std::printf("total items=%u\n", id - 1); return 0; }
++    unsigned nr = 0, tm = 0;
++    const std::string didl = s.browseDidl(argv[1], std::string(argv[2]) == "meta", (unsigned)std::strtoul(argv[3], nullptr, 10), (unsigned)std::strtoul(argv[4], nullptr, 10), nr, tm);
++    std::printf("%u %u\n%s\n", nr, tm, didl.c_str());
++    return 0;
++}
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/browse_tree_selftest/run.sh b/tests/browse_tree_selftest/run.sh
+--- a/tests/browse_tree_selftest/run.sh	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/browse_tree_selftest/run.sh	2026-09-21 10:21:47.869960750 +0000
+@@ -0,0 +1,21 @@
++#!/bin/sh
++# Compiles the plugin's REAL SacdDlnaServer::browseDidl() and soapActionName() (extracted from
++# dlna_server.cpp at run time) against a stub server, then crawls the whole Browse tree like a
++# renderer would. Needs g++ (C++17) and python3.
++set -e
++HERE=$(cd "$(dirname "$0")" && pwd); SRC="$HERE/../.."; W=$(mktemp -d)
++cp "$HERE"/harness.cpp "$HERE"/crawl.py "$HERE"/soap_test.cpp "$SRC"/library_index.h "$W"/
++cd "$W"
++python3 - "$SRC" <<'PY'
++import re, sys
++src = open(sys.argv[1] + '/dlna_server.cpp').read().replace('\r', '')
++hdr = open(sys.argv[1] + '/dsf_writer.h').read().replace('\r', '')
++a = src.index('std::string SacdDlnaServer::browseDidl('); b = src.index('std::string SacdDlnaServer::browseResponse(')
++open('browse_real.inc', 'w').write(src[a:b])
++open('consts.inc', 'w').write('\n'.join(re.findall(r'^constexpr const char\* k\w+ = "[^"]*";$', src, re.M)))
++open('dsdtrack.inc', 'w').write(re.search(r'struct DsdTrack \{.*?\n\};', hdr, re.S).group(0))
++a = src.index('std::string soapActionName('); b = src.index('std::string trimCopy(std::string s) {')
++open('soap_real.inc', 'w').write(src[a:b])
++PY
++echo "== SOAP action recognition"; g++ -std=c++17 -Wall -Wextra -o soap_test soap_test.cpp && ./soap_test
++echo "== Browse tree crawl";       g++ -std=c++17 -O1 -Wall -Wextra -Wno-unused-parameter -o harness harness.cpp && python3 crawl.py
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/browse_tree_selftest/soap_test.cpp b/tests/browse_tree_selftest/soap_test.cpp
+--- a/tests/browse_tree_selftest/soap_test.cpp	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/browse_tree_selftest/soap_test.cpp	2026-09-21 10:21:47.869090530 +0000
+@@ -0,0 +1,32 @@
++#include <cctype>
++#include <cstdio>
++#include <string>
++#include "soap_real.inc"
++static int fails = 0, checks = 0;
++#define EXPECT(header, body, want) do { ++checks; const std::string got = soapActionName(header, body); if (got != want) { ++fails; std::printf("FAIL: header=%s body=%.40s -> '%s' (wanted '%s')\n", std::string(header).c_str(), std::string(body).c_str(), got.c_str(), want); } } while (0)
++int main() {
++    const char* CD = "urn:schemas-upnp-org:service:ContentDirectory:1";
++    const std::string env = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>";
++    // header present (with and without quotes, CRLF left over from the header parser)
++    EXPECT(std::string("\"") + CD + "#Browse\"", "", "Browse");
++    EXPECT(std::string(CD) + "#Browse", "", "Browse");
++    EXPECT(std::string("\"") + CD + "#GetSearchCapabilities\"\r\n", "", "GetSearchCapabilities");
++    EXPECT(std::string("\"") + CD + "#GetSortCapabilities\"", "", "GetSortCapabilities");
++    EXPECT(std::string("\"") + CD + "#GetSystemUpdateID\"", "", "GetSystemUpdateID");
++    EXPECT(std::string("\"") + CD + "#Search\"", "", "Search");
++    EXPECT("\"urn:schemas-upnp-org:service:ContentDirectory:1#Browse\" ", "", "Browse");
++    // header wins over the body
++    EXPECT(std::string("\"") + CD + "#Browse\"", env + "<u:GetSortCapabilities/>", "Browse");
++    // no header: first element inside the body, any prefix
++    EXPECT("", env + "<u:Browse xmlns:u=\"" + CD + "\"><ObjectID>0</ObjectID></u:Browse></s:Body></s:Envelope>", "Browse");
++    EXPECT("", env + "<ns0:GetSortCapabilities xmlns:ns0=\"" + CD + "\"/></s:Body></s:Envelope>", "GetSortCapabilities");
++    EXPECT("", env + "<GetSystemUpdateID xmlns=\"" + CD + "\"></GetSystemUpdateID>", "GetSystemUpdateID");
++    EXPECT("", "<soap:Envelope xmlns:soap=\"x\"><soap:Header/><soap:Body><m:Browse xmlns:m=\"y\"/></soap:Body></soap:Envelope>", "Browse");
++    EXPECT("", "<?xml version=\"1.0\"?>\n<s:Envelope\n xmlns:s=\"x\">\n<s:Body>\n<u:GetSearchCapabilities\n xmlns:u=\"y\"/>", "GetSearchCapabilities");
++    // nothing usable
++    EXPECT("", "", "");
++    EXPECT("", "garbage", "");
++    EXPECT("", "<?xml version=\"1.0\"?>", "");
++    std::printf("%d checks, %d failures\n", checks, fails);
++    return fails ? 1 : 0;
++}
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/dsf_dop_selftest/README.md b/tests/dsf_dop_selftest/README.md
+--- a/tests/dsf_dop_selftest/README.md	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/dsf_dop_selftest/README.md	2026-09-20 17:26:13.415739690 +0000
+@@ -0,0 +1,20 @@
++# DoP -> DSF self-test
++
++Validates the SACD/DSP -> DSF path independently of foobar2000 and of the renderer.
++
++`run.sh` generates a real DSD64 stereo signal (1 kHz left, 2 kHz right, second-order
++sigma-delta), packs it as DoP exactly as the DoP 1.1 specification describes, feeds it
++through the plugin's **own** `SacdDecoder::unpackDop()` and `DsfWriter` (extracted from the
++sources at run time, so it always tests the current code), and then checks:
++
++* DSF structure: advertised sizes, whole 4096-byte blocks, zero padding of the last block;
++* the payload is **bit-exact** against the original DSD stream;
++* an independent `ffmpeg` decode has a clean tone with in-band SNR above 45 dB.
++
++Why it exists: writing the DoP bytes in the wrong order and without reversing the bits
++still produces a tone (only the noise-shaped quantisation noise is scrambled), so the
++mistake is invisible to a listening test of the tone but costs ~30-45 dB of SNR.
++
++Requires `g++` (C++17), `python3` with `numpy`, and `ffmpeg`. Only the SDK types used by
++`unpackDop()` are stubbed (`stub.h`); `audio_math::convert_to_int24` is a faithful copy of
++`pfc/audio_math.cpp` (it multiplies the scale by 0x800000).
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/dsf_dop_selftest/analyze.py b/tests/dsf_dop_selftest/analyze.py
+--- a/tests/dsf_dop_selftest/analyze.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/dsf_dop_selftest/analyze.py	2026-09-20 17:26:13.411034467 +0000
+@@ -0,0 +1,34 @@
++"""Checks the DSF written by the harness: structure, bit-exactness against the
++original DSD stream, and in-band SNR of an independent ffmpeg decode."""
++import numpy as np, struct, subprocess, sys
++rev = np.array([int('{:08b}'.format(i)[::-1], 2) for i in range(256)], dtype=np.uint8)
++L = np.load('dsd_left_msb.npy'); R = np.load('dsd_right_msb.npy')
++b = open('out.dsf', 'rb').read()
++assert b[0:4] == b'DSD ' and b[28:32] == b'fmt ', "bad DSF magic"
++advertised, = struct.unpack('<Q', b[12:20])
++fmt_size, = struct.unpack('<Q', b[32:40])
++ver, fid, ctype, ch, rate, bps, spc, blk, _ = struct.unpack('<IIIIIIQII', b[40:80])
++dpos = 28 + fmt_size; assert b[dpos:dpos+4] == b'data'
++data_size, = struct.unpack('<Q', b[dpos+4:dpos+12]); data = np.frombuffer(b[dpos+12:], dtype=np.uint8)
++ok = True
++def check(name, cond):
++    global ok; ok &= bool(cond); print(('PASS  ' if cond else 'FAIL  ') + name)
++check("advertised file size == real size", advertised == len(b))
++check("data chunk size == 12 + data bytes", data_size - 12 == len(data))
++check("data is a whole number of 4096-byte blocks per channel", len(data) % (2 * 4096) == 0)
++check("bits per sample field == 1 (LSB first)", bps == 1)
++if len(data) % (2 * 4096) == 0:
++    blocks = data.reshape(-1, 2, 4096); c0 = blocks[:, 0, :].reshape(-1); c1 = blocks[:, 1, :].reshape(-1); n = len(L)
++    check("left channel is bit-exact (bit-reversed DoP payload)", np.array_equal(rev[c0[:n]], L))
++    check("right channel is bit-exact", np.array_equal(rev[c1[:n]], R))
++    check("final block is padded with zeros", not c0[n:].any() and not c1[n:].any())
++subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', 'out.dsf', '-ar', '44100', '-ac', '2', '-c:a', 'pcm_f32le', 'decoded.wav'], check=True)
++raw = open('decoded.wav', 'rb').read(); i = raw.find(b'data') + 8
++a = np.frombuffer(raw[i:i + (len(raw) - i) // 8 * 8], dtype='<f4').reshape(-1, 2).astype(float)[3000:3000 + 16384]
++for c, f0 in ((0, 1000), (1, 2000)):
++    x = a[:, c]; w = np.hanning(len(x)); P = np.abs(np.fft.rfft(x * w)) ** 2; fr = np.fft.rfftfreq(len(x), 1 / 44100)
++    tone = np.abs(fr - f0) < 6 * fr[1]; band = (fr > 20) & (fr < 20000) & ~tone
++    snr = 10 * np.log10(P[tone].sum() / P[band].sum())
++    print(f"      channel {'LR'[c]}: {f0} Hz tone, in-band SNR {snr:.1f} dB")
++    check(f"channel {'LR'[c]} SNR above 45 dB (wrong bit/byte order gives ~25 dB)", snr > 45)
++sys.exit(0 if ok else 1)
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/dsf_dop_selftest/gen_dop_test.py b/tests/dsf_dop_selftest/gen_dop_test.py
+--- a/tests/dsf_dop_selftest/gen_dop_test.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/dsf_dop_selftest/gen_dop_test.py	2026-09-20 17:26:58.530284536 +0000
+@@ -0,0 +1,34 @@
++import numpy as np
++# --- 0.5 s of stereo DSD64: 1 kHz left, 2 kHz right (second-order sigma-delta modulator)
++FS = 2822400
++N  = FS // 2
++def sdm(freq, amp):
++    t = np.arange(N) / FS
++    x = amp * np.sin(2*np.pi*freq*t)
++    bits = np.empty(N, dtype=np.uint8)
++    v1 = v2 = 0.0; y = 1.0
++    for i in range(N):
++        v1 += x[i] - y
++        v2 += v1 - y
++        y = 1.0 if v2 >= 0 else -1.0
++        bits[i] = 1 if y > 0 else 0
++    return bits
++L = sdm(1000, 0.4); R = sdm(2000, 0.4)
++def pack_msb_first(bits):           # OLDEST bit in the MSB of each byte (DFF/DoP convention)
++    return np.packbits(bits, bitorder='big')
++bl, br = pack_msb_first(L), pack_msb_first(R)
++nbytes = len(bl) - (len(bl) % 2)
++bl, br = bl[:nbytes], br[:nbytes]
++np.save('dsd_left_msb.npy', bl); np.save('dsd_right_msb.npy', br)
++# --- pack as DoP (spec 1.1): [8-bit marker][16 DSD bits, OLDEST byte first]
++frames = nbytes // 2
++marker = np.where(np.arange(frames) % 2 == 0, 0x05, 0xFA).astype(np.uint32)
++def dop(b):
++    older = b[0::2].astype(np.uint32); newer = b[1::2].astype(np.uint32)
++    w = (marker << 16) | (older << 8) | newer
++    w = w.astype(np.int64); w[w >= (1 << 23)] -= (1 << 24)        # signed int24
++    return w.astype(np.float64) / 8388608.0                       # normalised audio_sample
++inter = np.empty(frames * 2, dtype=np.float64)
++inter[0::2] = dop(bl); inter[1::2] = dop(br)
++inter.tofile('dop_input.f64')
++print("DoP frames:", frames, "| bytes per channel:", nbytes, "| 4096-byte blocks:", nbytes/4096)
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/dsf_dop_selftest/harness_main.cpp b/tests/dsf_dop_selftest/harness_main.cpp
+--- a/tests/dsf_dop_selftest/harness_main.cpp	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/dsf_dop_selftest/harness_main.cpp	2026-09-20 17:26:13.409983925 +0000
+@@ -0,0 +1,27 @@
++// Feeds a synthetic DoP stream through the plugin's REAL SacdDecoder::unpackDop()
++// and DsfWriter and writes a DSF file. See README.md.
++#include "stub.h"
++#include "dsf_writer.h"
++#include <cstdio>
++#include <cstring>
++int main(int argc, char** argv) {
++    if (argc < 3) { std::fprintf(stderr, "usage: harness <dop_input.f64> <out.dsf>\n"); return 1; }
++    std::ifstream in(argv[1], std::ios::binary | std::ios::ate);
++    if (!in) { std::fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
++    const size_t n = static_cast<size_t>(in.tellg()) / sizeof(double); in.seekg(0);
++    std::vector<double> all(n); in.read(reinterpret_cast<char*>(all.data()), static_cast<std::streamsize>(n * sizeof(double)));
++    DsfWriter w(std::wstring(argv[2], argv[2] + std::strlen(argv[2])));
++    bool started = false; uint32_t rate = 0; uint64_t spc = 0;
++    const size_t chunkFrames = 2048;
++    for (size_t f = 0; f < n / 2; f += chunkFrames) {
++        audio_chunk c; const size_t nf = std::min(chunkFrames, n / 2 - f);
++        c.data.assign(all.begin() + static_cast<std::ptrdiff_t>(f * 2), all.begin() + static_cast<std::ptrdiff_t>((f + nf) * 2));
++        std::vector<std::vector<uint8_t>> dsd; uint32_t r = 0;
++        if (!SacdDecoder::unpackDop(c, dsd, r)) { std::printf("unpackDop rejected chunk at frame %zu\n", f); return 2; }
++        if (!started) { rate = r; w.begin(rate, 2); started = true; }
++        spc += static_cast<uint64_t>(dsd[0].size()) * 8; w.append(dsd);
++    }
++    w.finish(spc);
++    std::printf("DSF written: rate=%u samples/channel=%llu\n", rate, static_cast<unsigned long long>(spc));
++    return 0;
++}
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/dsf_dop_selftest/run.sh b/tests/dsf_dop_selftest/run.sh
+--- a/tests/dsf_dop_selftest/run.sh	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/dsf_dop_selftest/run.sh	2026-09-20 17:26:13.412172000 +0000
+@@ -0,0 +1,21 @@
++#!/bin/sh
++# Builds the harness from the plugin's real sacd_decode.cpp / dsf_writer.cpp and
++# validates the resulting DSF. Needs: g++ (C++17), python3 + numpy, ffmpeg.
++set -e
++HERE=$(cd "$(dirname "$0")" && pwd); SRC="$HERE/../.."; W=$(mktemp -d); cd "$W"
++cp "$HERE"/stub.h "$HERE"/harness_main.cpp "$HERE"/gen_dop_test.py "$HERE"/analyze.py .
++cp "$SRC"/dsf_writer.h .
++printf '#pragma once\n#include "stub.h"\n' > stdafx.h
++# std::fstream::open(std::wstring) is an MSVC extension; adapt only this test copy.
++sed 's/m_file.open(path,/m_file.open(std::filesystem::path(path),/' "$SRC"/dsf_writer.cpp > dsf_writer.cpp
++python3 - "$SRC" <<'PY'
++import re, sys
++def between(t, s):
++    m = re.search(s, t, re.M); e = re.search('^}', t[m.start():], re.M); return t[m.start():m.start()+e.end()]
++t = open(sys.argv[1] + '/sacd_decode.cpp').read().replace('\r', '')
++open('unpack.cpp', 'w').write('#include "stub.h"\n' + between(t, r'^static const std::array<uint8_t, 256>& bitReverseTable') + '\n' + between(t, r'^bool SacdDecoder::unpackDop') + '\n')
++PY
++python3 gen_dop_test.py
++g++ -std=c++17 -O2 -Wall harness_main.cpp unpack.cpp dsf_writer.cpp -o harness
++./harness dop_input.f64 out.dsf
++python3 analyze.py
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/dsf_dop_selftest/stub.h b/tests/dsf_dop_selftest/stub.h
+--- a/tests/dsf_dop_selftest/stub.h	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/dsf_dop_selftest/stub.h	2026-09-20 17:26:13.407051613 +0000
+@@ -0,0 +1,31 @@
++#pragma once
++#include <cstdint>
++#include <cstddef>
++#include <cmath>
++#include <vector>
++#include <string>
++#include <array>
++#include <fstream>
++#include <stdexcept>
++#include <algorithm>
++#include <cstring>
++#include <filesystem>
++typedef double audio_sample;
++namespace audio_math {
++// Réplica fiel de pfc/audio_math.cpp: scale *= 0x800000; clip; rint; int24 little-endian
++inline void convert_to_int24(const double* in, size_t count, void* out, double scale) {
++    scale *= 0x800000; uint8_t* p = (uint8_t*)out;
++    for (size_t i = 0; i < count; ++i) {
++        double v = in[i] * scale; if (v < -8388608.0) v = -8388608.0; if (v > 8388607.0) v = 8388607.0;
++        int32_t iv = (int32_t)std::nearbyint(v);
++        p[0] = iv & 0xFF; p[1] = (iv >> 8) & 0xFF; p[2] = (iv >> 16) & 0xFF; p += 3;
++    }
++}
++}
++struct audio_chunk {
++    unsigned ch = 2, sr = 176400; std::vector<double> data;
++    unsigned get_channels() const { return ch; } unsigned get_srate() const { return sr; }
++    const audio_sample* get_data() const { return data.data(); }
++    size_t get_sample_count() const { return data.size() / ch; }
++};
++struct SacdDecoder { static bool unpackDop(const audio_chunk&, std::vector<std::vector<uint8_t>>&, uint32_t&); };
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/library_index_selftest/README.md b/tests/library_index_selftest/README.md
+--- a/tests/library_index_selftest/README.md	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/library_index_selftest/README.md	2026-09-21 10:21:47.870751225 +0000
+@@ -0,0 +1,2 @@
++# library_index self-test
++Unit test for `library_index.h` (artists, albums, genres, folders, all tracks). `./run.sh` needs only g++ (C++17).
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/library_index_selftest/run.sh b/tests/library_index_selftest/run.sh
+--- a/tests/library_index_selftest/run.sh	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/library_index_selftest/run.sh	2026-09-21 10:14:52.195573208 +0000
+@@ -0,0 +1,5 @@
++#!/bin/sh
++set -e
++cd "$(dirname "$0")"
++g++ -std=c++17 -O1 -Wall -Wextra -o /tmp/test_library_index test_library_index.cpp
++/tmp/test_library_index
+diff -ruN --strip-trailing-cr -x .vs -x x64 a/tests/library_index_selftest/test_library_index.cpp b/tests/library_index_selftest/test_library_index.cpp
+--- a/tests/library_index_selftest/test_library_index.cpp	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/library_index_selftest/test_library_index.cpp	2026-09-21 10:15:08.134508595 +0000
+@@ -0,0 +1,129 @@
++// Unit test for library_index.h (standard C++ only). Build: see run.sh
++#include "../../library_index.h"
++#include <cstdio>
++#include <set>
++
++static int g_fail = 0, g_pass = 0;
++#define CHECK(cond) do { if (cond) ++g_pass; else { ++g_fail; std::printf("FAIL  line %d: %s\n", __LINE__, #cond); } } while (0)
++
++using libindex::Track;
++
++static Track T(uint32_t id, const char* title, const char* artist, const char* album, const char* genre,
++               const char* tn, const char* dn, const char* path, const char* albumArtist = "") {
++    Track t; t.id = id; t.title = title; t.artist = artist; t.album = album; t.genre = genre;
++    t.trackNumber = tn; t.discNumber = dn; t.nativePath = path; t.albumArtist = albumArtist; return t;
++}
++
++int main() {
++    std::vector<Track> v;
++    // Miles Davis - two-disc album stored out of order, with "3/12" style numbers
++    v.push_back(T(10, "So What",        "Miles Davis", "Kind of Blue", "Jazz", "1",    "1/1", "D:\\Music\\DSD\\Miles\\Kind of Blue\\01.dsf"));
++    v.push_back(T(11, "Blue in Green",  "Miles Davis", "Kind of Blue", "jazz", "3/5",  "1/1", "D:\\Music\\DSD\\Miles\\Kind of Blue\\03.dsf"));
++    v.push_back(T(12, "Freddie Freeloader","Miles Davis","Kind of Blue","Jazz","2",    "1/1", "D:\\Music\\DSD\\Miles\\Kind of Blue\\02.dsf"));
++    v.push_back(T(13, "Live Track",     "Miles Davis", "Live Album",   "Jazz", "1",    "2",   "D:\\Music\\DSD\\Miles\\Live\\d2t1.dsf"));
++    v.push_back(T(14, "Live Track 0",   "Miles Davis", "Live Album",   "Jazz", "9",    "1",   "D:\\Music\\DSD\\Miles\\Live\\d1t9.dsf"));
++    // A compilation: different track artists, same album artist
++    v.push_back(T(20, "Song A", "Artist One", "Great Hits", "Rock", "1", "", "D:\\Music\\DSD\\Comp\\a.dsf", "Various Artists"));
++    v.push_back(T(21, "Song B", "Artist Two", "Great Hits", "Rock", "2", "", "D:\\Music\\DSD\\Comp\\b.dsf", "Various Artists"));
++    // SACD ISO with three subsongs (same file, three items), no genre tag
++    v.push_back(T(30, "Iso 1", "Orchestra", "Symphony", "", "1", "", "D:\\Music\\ISO\\sym.iso"));
++    v.push_back(T(31, "Iso 2", "Orchestra", "Symphony", "", "2", "", "D:\\Music\\ISO\\sym.iso"));
++    v.push_back(T(32, "Iso 3", "Orchestra", "Symphony", "", "3", "", "D:\\Music\\ISO\\sym.iso"));
++    // Other drive, UNC share, and a track that is not a plain local file
++    v.push_back(T(40, "Drive E", "Someone", "E Album", "Classical", "1", "", "E:\\Stuff\\e.dsf"));
++    v.push_back(T(41, "On NAS",  "Someone", "NAS Album", "Classical", "1", "", "\\\\nas\\share\\Music\\n.dsf"));
++    v.push_back(T(42, "Remote",  "Someone", "Remote Album", "Classical", "1", "", ""));
++    // Same title/artist differing only in case must merge
++    v.push_back(T(50, "same",   "MILES davis", "kind of blue", "JAZZ", "4", "1/1", "D:\\Music\\DSD\\Miles\\Kind of Blue\\04.dsf"));
++
++    libindex::NextIds ids;
++    const libindex::Index ix = libindex::build(v, ids);
++
++    // ---- artists: case-insensitive merge, album artist wins for compilations
++    CHECK(ix.artists.size() == 4);   // Miles Davis (case-insensitive merge), Various Artists, Orchestra, Someone
++    std::vector<std::string> names; for (auto& a : ix.artists) names.push_back(a.name);
++    CHECK(std::find(names.begin(), names.end(), "Various Artists") != names.end());
++    CHECK(std::find(names.begin(), names.end(), "Artist One") == names.end());   // did NOT split the compilation
++    CHECK(std::is_sorted(ix.artists.begin(), ix.artists.end(), [](auto& a, auto& b){ return libindex::ciCompare(a.name, b.name) < 0; }));
++
++    // ---- albums
++    const libindex::Artist* miles = nullptr;
++    for (auto& a : ix.artists) if (libindex::lower(a.name) == "miles davis") miles = &a;
++    CHECK(miles && miles->albumIds.size() == 2);                         // "Kind of Blue" (merged with 'kind of blue') + Live
++    const libindex::Album* kob = nullptr; const libindex::Album* live = nullptr;
++    for (auto& al : ix.albums) { if (al.key == "kind of blue") kob = &al; if (al.key == "live album") live = &al; }
++    CHECK(kob && kob->itemIds.size() == 4);
++    CHECK(kob && kob->itemIds == std::vector<uint32_t>({10, 12, 11, 50}));       // track order 1,2,3,4
++    CHECK(live && live->itemIds == std::vector<uint32_t>({14, 13}));             // disc 1 track 9 before disc 2 track 1
++    CHECK(miles && ix.albums[ix.albumIndex.at(miles->albumIds[0])].title == "Kind of Blue");   // albums by title within artist
++    const libindex::Album* great = nullptr;
++    for (auto& al : ix.albums) if (al.title == "Great Hits") great = &al;
++    CHECK(great && great->itemIds.size() == 2 && ix.artists[ix.artistIndex.at(great->artistId)].name == "Various Artists");
++
++    // ---- flat Albums list
++    CHECK(ix.albumsByTitle.size() == ix.albums.size());
++    std::vector<std::string> titles; for (auto id : ix.albumsByTitle) titles.push_back(ix.albums[ix.albumIndex.at(id)].title);
++    CHECK(std::is_sorted(titles.begin(), titles.end(), [](auto& a, auto& b){ return libindex::ciCompare(a, b) < 0; }));
++
++    // ---- genres: case-insensitive merge, empty -> Unknown Genre, sorted
++    std::vector<std::string> gn; for (auto& g : ix.genres) gn.push_back(g.name);
++    CHECK(ix.genres.size() == 4);   // Classical, Jazz, Rock, Unknown Genre
++    CHECK(std::find(gn.begin(), gn.end(), "Unknown Genre") != gn.end());
++    size_t jazzCount = 0; for (auto& g : ix.genres) if (g.key == "jazz") jazzCount = g.itemIds.size();
++    CHECK(jazzCount == 6);          // 10,11,12,13,14 and 50 ("JAZZ" merges with "Jazz"/"jazz")
++    size_t total = 0; for (auto& g : ix.genres) total += g.itemIds.size();
++    CHECK(total == v.size());       // every track is in exactly one genre
++
++    // ---- all tracks
++    CHECK(ix.allTracks.size() == v.size());
++    CHECK(std::set<uint32_t>(ix.allTracks.begin(), ix.allTracks.end()).size() == v.size());
++    std::vector<std::string> tt; for (auto id : ix.allTracks) for (auto& t : v) if (t.id == id) tt.push_back(t.title);
++    CHECK(std::is_sorted(tt.begin(), tt.end(), [](auto& a, auto& b){ return libindex::ciCompare(a, b) <= 0; }));
++
++    // ---- folders
++    // Tree: [root] -> D: -> Music -> {DSD -> {Miles -> {Kind of Blue, Live}, Comp}, ISO}, E: -> Stuff, \\nas.. (nas -> share -> Music)
++    // Root has two/three branches (D:, E:, nas), so the collapsed root is the virtual root.
++    CHECK(ix.folders.size() > 5);
++    const libindex::Folder& froot = ix.folders[ix.folderIndex.at(ix.folderRoot)];
++    CHECK(froot.folderIds.size() == 3);                // D:, E:, nas (UNC)
++    CHECK(froot.itemIds.empty());
++    CHECK(ix.folders[ix.folderIndex.at(froot.folderIds[0])].name == "D:");   // sorted by name
++    // The remote track (no native path) is in no folder
++    size_t inFolders = 0; for (auto& f : ix.folders) inFolders += f.itemIds.size();
++    CHECK(inFolders == v.size() - 1);
++    // ISO: three subsong items in the same folder, in track order
++    for (auto& f : ix.folders) if (f.name == "ISO") CHECK(f.itemIds == std::vector<uint32_t>({30, 31, 32}));
++    // parent links
++    for (auto& f : ix.folders) for (auto cid : f.folderIds) CHECK(ix.folders[ix.folderIndex.at(cid)].parentId == f.id);
++
++    // ---- collapsing: a library under one drive and one path collapses to the first branching folder
++    std::vector<Track> w;
++    w.push_back(T(1, "a", "X", "Alb", "G", "1", "", "D:\\Music\\DSD\\Rock\\a.dsf"));
++    w.push_back(T(2, "b", "X", "Alb", "G", "2", "", "D:\\Music\\DSD\\Jazz\\b.dsf"));
++    libindex::NextIds ids2; const libindex::Index iw = libindex::build(w, ids2);
++    const libindex::Folder& r2 = iw.folders[iw.folderIndex.at(iw.folderRoot)];
++    CHECK(r2.name == "DSD");                           // D: and Music (single-child chains) are skipped
++    CHECK(r2.folderIds.size() == 2);
++    CHECK(iw.folders[iw.folderIndex.at(r2.folderIds[0])].name == "Jazz");
++
++    // ---- ids are never reused across rebuilds
++    libindex::NextIds keep = ids;
++    const libindex::Index again = libindex::build(v, keep);
++    for (auto& a : again.artists) CHECK(a.id >= ids.artist);       // nothing from the first build is reused
++    for (auto& a : again.albums)  CHECK(a.id >= ids.album);
++    for (auto& g : again.genres)  CHECK(g.id >= ids.genre);
++    for (auto& f : again.folders) CHECK(f.id >= ids.folder);
++    CHECK(keep.artist > ids.artist && keep.folder > ids.folder);
++
++    // ---- empty and degenerate libraries
++    std::vector<Track> none; libindex::NextIds ids3; const libindex::Index e = libindex::build(none, ids3);
++    CHECK(e.artists.empty() && e.albums.empty() && e.genres.empty() && e.allTracks.empty());
++    CHECK(e.folders.size() == 1 && e.folderRoot == e.folders[0].id);
++
++    std::vector<Track> flat; flat.push_back(T(1, "only", "A", "B", "G", "1", "", "file.dsf"));   // no directory at all
++    libindex::NextIds ids4; const libindex::Index f = libindex::build(flat, ids4);
++    CHECK(f.folders[f.folderIndex.at(f.folderRoot)].itemIds.size() == 1);
++
++    std::printf("%d passed, %d failed\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++}

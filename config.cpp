@@ -30,7 +30,28 @@ const char* sacd_plugin_required_name() {
     return "foo_input_sacd.dll (Super Audio CD Decoder)";
 }
 
-bool sacd_plugin_installed(pfc::string_base* versionOut) {
+namespace {
+// get_status() runs several times a second (status UI, /status page). Enumerating every
+// installed component's service on each call is wasteful, and the answer cannot change
+// while foobar2000 is running, so it is cached once start-up has finished.
+struct ComponentProbe {
+    std::mutex m;
+    bool cached = false;
+    bool found = false;
+    pfc::string8 version;
+};
+
+template <typename Matcher>
+bool probeComponent(ComponentProbe& probe, pfc::string_base* versionOut, Matcher matches) {
+    {
+        std::lock_guard<std::mutex> g(probe.m);
+        if (probe.cached) {
+            if (versionOut) { if (probe.found) *versionOut = probe.version; else versionOut->reset(); }
+            return probe.found;
+        }
+    }
+    bool found = false;
+    pfc::string8 foundVersion;
     service_enum_t<componentversion> e;
     componentversion::ptr ptr;
     while (e.next(ptr)) {
@@ -38,37 +59,35 @@ bool sacd_plugin_installed(pfc::string_base* versionOut) {
         ptr->get_file_name(fileName);
         ptr->get_component_name(componentName);
         ptr->get_component_version(version);
+        if (matches(fileName, componentName)) { found = true; foundVersion = version; break; }
+    }
+    // While foobar2000 is still initializing, a negative answer might just mean the
+    // component has not registered yet, so it is only cached once start-up is over.
+    if (found || !core_api::is_initializing()) {
+        std::lock_guard<std::mutex> g(probe.m);
+        probe.cached = true; probe.found = found; probe.version = foundVersion;
+    }
+    if (versionOut) { if (found) *versionOut = foundVersion; else versionOut->reset(); }
+    return found;
+}
+}
 
+bool sacd_plugin_installed(pfc::string_base* versionOut) {
+    static ComponentProbe probe;
+    return probeComponent(probe, versionOut, [](const pfc::string8& fileName, const pfc::string8& componentName) {
         const bool fileMatch = !_stricmp(fileName, "foo_input_sacd.dll");
         const bool nameMatch = !_stricmp(componentName, "Super Audio CD Decoder") ||
             (strstr(componentName.c_str(), "SACD") != nullptr && strstr(componentName.c_str(), "Decoder") != nullptr);
-
-        if (fileMatch || nameMatch) {
-            if (versionOut) *versionOut = version;
-            return true;
-        }
-    }
-    if (versionOut) versionOut->reset();
-    return false;
+        return fileMatch || nameMatch;
+    });
 }
 
-
 bool dsd_processor_installed(pfc::string_base* versionOut) {
-    service_enum_t<componentversion> e;
-    componentversion::ptr ptr;
-    while (e.next(ptr)) {
-        pfc::string8 fileName, componentName, version;
-        ptr->get_file_name(fileName);
-        ptr->get_component_name(componentName);
-        ptr->get_component_version(version);
+    static ComponentProbe probe;
+    return probeComponent(probe, versionOut, [](const pfc::string8& fileName, const pfc::string8& componentName) {
         const bool fileMatch = !_stricmp(fileName, "foo_dsd_processor.dll");
         const bool nameMatch = !_stricmp(componentName, "DSD Processor") ||
             (strstr(componentName.c_str(), "DSD") != nullptr && strstr(componentName.c_str(), "Processor") != nullptr);
-        if (fileMatch || nameMatch) {
-            if (versionOut) *versionOut = version;
-            return true;
-        }
-    }
-    if (versionOut) versionOut->reset();
-    return false;
+        return fileMatch || nameMatch;
+    });
 }

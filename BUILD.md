@@ -4,6 +4,11 @@ Este documento explica, passo a passo, como preparar um PC Windows para **compil
 
 > **Estado do projecto:** Alpha. A **0.8 Alpha 3 I foi confirmada pelo responsável do projecto como compilada com sucesso e a funcionar** em Windows **Debug x64**, com `pfc` em **Debug FB2K x64**, SDK foobar2000 2025-03-07, MSVC v142 e WTL. A Alpha 3 J acrescenta novos pontos do roadmap e necessita de novo rebuild.
 
+## Alpha 3 M — nota de auditoria
+
+A Alpha 3 M recebeu uma revisão de robustez ao nível do código. **Necessita de novo rebuild Windows/MSVC v142.** A última versão confirmada pelo utilizador como compilada sem erros e a funcionar é a Alpha 3 I.
+
+
 ---
 
 ## Validação de compilação da 0.8 Alpha 3 E
@@ -28,7 +33,7 @@ SDK:       foobar2000 SDK 2025-03-07
 Toolset:   MSVC v142
 Platform:  x64
 Config:    Debug
-WTL:       D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
+WTL:       <SDK root>\<WTL folder>\include
 ```
 
 O log de validação deve ser interpretado como uma confirmação da **compilação**. Testes de reprodução, descoberta UPnP/DLNA, transmissão DSD real, gapless e compatibilidade com o firmware específico do SDX continuam a ser testes de runtime.
@@ -806,16 +811,16 @@ https://learn.microsoft.com/en-us/cpp/windows/overview-of-windows-programming-in
 ## WTL and the v142 toolset
 
 The foobar2000 SDK helper layer requires WTL headers in addition to ATL.
-This project uses the **v142** toolset and the canonical WTL tree supplied with the SDK:
+This project uses the **v142** toolset. The WTL directory name is not fixed; the project auto-discovers a sibling folder containing `include\atlapp.h`:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
+<SDK root>\<WTL folder>\include
 ```
 
 The key header is:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include\atlapp.h
+<SDK root>\<WTL folder>\include\atlapp.h
 ```
 
 The component project is configured for:
@@ -834,15 +839,15 @@ From a Visual Studio Developer PowerShell:
 .\tools\check_build_env.ps1
 ```
 
-The script uses the project's canonical WTL path by default.
+The script auto-discovers WTL by the marker header `include\atlapp.h`.
 
 You can also specify it explicitly:
 
 ```powershell
-.\tools\check_build_env.ps1 -WtlInclude 'D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include'
+.\tools\check_build_env.ps1 -WtlInclude '<SDK root>\<WTL folder>\include'
 ```
 
-### Build with the canonical WTL tree
+### Build with auto-discovered or renamed WTL tree
 
 ```powershell
 .\tools\build.ps1 -Configuration Debug -Platform x64
@@ -857,10 +862,10 @@ or:
 An explicit path is also supported:
 
 ```powershell
-.\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude 'D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include'
+.\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude '<SDK root>\<WTL folder>\include'
 ```
 
-See `WTL_SETUP.md` and `V142_WTL_FIX.md` for the complete setup.
+See `WTL_SETUP.md`, `WTL_RELOCATION.md` and `V142_WTL_FIX.md` for the complete setup.
 
 
 ## SDK shared library path
@@ -889,3 +894,13 @@ Alpha 3 J adds live current-track metadata, source/output technical information 
 
 ## Alpha 3 I build validation note
 The immediately preceding Alpha 3 J build reached project compilation successfully but stopped on undeclared live-stream diagnostic members in `dlna_server.cpp`. Alpha 3 I adds the missing declarations to `dlna_server.h`.
+
+
+### Alpha 3 P — WTL discovery fix
+
+A Alpha 3 P corrige a sintaxe MSBuild da descoberta automática do WTL. Não se deve usar `@(WTLMarker)` numa expressão `Condition`; o marcador é agora convertido em propriedade dentro de um `PropertyGroup`. Se existirem várias instalações WTL detectáveis, definir explicitamente `WTLIncludeDir` em `WTL.user.props`.
+
+
+### Alpha 3 Q — WTL relocation / MSBuild fix
+
+Alpha 3 Q removes the invalid MSBuild item-list-to-property conversion from WTL discovery. It also adds an SDK-root `Directory.Build.targets` overlay so WTL headers are injected into referenced projects such as libPPUI and foobar2000_sdk_helpers. The `tools/install_wtl_support.ps1` script auto-detects any WTL folder containing `include\atlapp.h`, independent of the folder name.

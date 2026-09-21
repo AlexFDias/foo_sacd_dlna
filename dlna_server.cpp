@@ -9,6 +9,8 @@
 #include <cctype>
 #include <filesystem>
 #include <shellapi.h>
+#include <iphlpapi.h>
+#pragma comment(lib, "iphlpapi.lib")
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -21,14 +23,47 @@ constexpr const char* kArtistsObject = "artists";
 constexpr const char* kArtistPrefix = "artist-";
 constexpr const char* kAlbumPrefix = "album-";
 constexpr const char* kTrackPrefix = "track-";
+constexpr const char* kAlbumsObject = "albums";
+constexpr const char* kGenresObject = "genres";
+constexpr const char* kFoldersObject = "folders";
+constexpr const char* kAllTracksObject = "alltracks";
+constexpr const char* kGenrePrefix = "genre-";
+constexpr const char* kFolderPrefix = "folder-";
 constexpr size_t kMaxHttpHeader = 128 * 1024;
 constexpr size_t kMaxSoapBody = 2 * 1024 * 1024;
 constexpr uint32_t kCacheFormatVersion = 2;
 constexpr uint32_t kMaxConcurrentStreams = 2;
+constexpr const char* kVersion = "0.8-alpha3-s";
 
 std::string lowerCopy(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
+}
+
+// Name of the UPnP action in a SOAP request ("Browse", "GetSortCapabilities"...), or "" when it
+// cannot be determined. SOAPACTION looks like "urn:schemas-upnp-org:service:ContentDirectory:1#Browse"
+// (quotes optional). Without the header, the first element inside the SOAP body is the action, whatever
+// namespace prefix the control point chose (<u:Browse>, <ns0:Browse>, ...).
+std::string soapActionName(const std::string& soapActionHeader, const std::string& body) {
+    const size_t hash = soapActionHeader.rfind('#');
+    if (hash != std::string::npos) {
+        std::string name = soapActionHeader.substr(hash + 1);
+        while (!name.empty() && (name.back() == '"' || name.back() == ' ' || name.back() == '\r' || name.back() == '\n' || name.back() == '\t')) name.pop_back();
+        return name;
+    }
+    size_t pos = 0;
+    while ((pos = body.find('<', pos)) != std::string::npos) {
+        ++pos;
+        if (pos >= body.size() || body[pos] == '?' || body[pos] == '/' || body[pos] == '!') continue;
+        size_t end = pos;
+        while (end < body.size() && !std::isspace(static_cast<unsigned char>(body[end])) && body[end] != '>' && body[end] != '/') ++end;
+        const std::string tag = body.substr(pos, end - pos);
+        const size_t colon = tag.find(':');
+        const std::string local = colon == std::string::npos ? tag : tag.substr(colon + 1);
+        if (!local.empty() && local != "Envelope" && local != "Body" && local != "Header") return local;
+        pos = end;
+    }
+    return std::string();
 }
 
 std::string trimCopy(std::string s) {
@@ -39,9 +74,30 @@ std::string trimCopy(std::string s) {
 
 std::mutex g_logMutex;
 
-std::wstring networkLogPath() {
-    std::wstring p = pfc::stringcvt::string_wide_from_utf8(core_api::get_profile_path());
+std::wstring utf8ToWide(const char* text);   // defined further down
+
+// foobar2000 hands out paths in its canonical form: local files look like
+// "file://D:\Music\album.dsf", and core_api::get_profile_path() is a file:// URL
+// too. Win32 and std::filesystem need the native form. Returns an empty string for
+// anything that is not a plain local file (unpack://, cdda://, http://...). This
+// uses the SDK's own parser, so the two can never disagree.
+std::wstring nativePathFromFb2k(const char* fb2kPath) {
+    if (!fb2kPath || !*fb2kPath) return {};
+    pfc::string8 native;
+    if (!foobar2000_io::extract_native_path(fb2kPath, native)) return {};
+    return utf8ToWide(native.c_str());
+}
+
+// Native profile directory, with a trailing backslash; empty when unavailable.
+std::wstring profileFolderNative() {
+    std::wstring p = nativePathFromFb2k(core_api::get_profile_path());
     if (!p.empty() && p.back() != L'\\' && p.back() != L'/') p += L'\\';
+    return p;
+}
+
+std::wstring networkLogPath() {
+    std::wstring p = profileFolderNative();
+    if (p.empty()) return {};
     p += L"foo_sacd_dlna\\network.log";
     CreateDirectoryW((p.substr(0, p.rfind(L"\\"))).c_str(), nullptr);
     return p;
@@ -60,6 +116,7 @@ void networkLog(const std::string& message) {
     FB2K_console_formatter() << "SACD DLNA [network]: " << message.c_str();
     try {
         const auto path = networkLogPath();
+        if (path.empty()) return;
         std::error_code ec;
         if (fs::exists(path, ec) && fs::file_size(path, ec) > 10ull * 1024ull * 1024ull) {
             const auto old = path + L".1";
@@ -72,11 +129,13 @@ void networkLog(const std::string& message) {
 }
 
 void setLastError(const std::string& message) {
+    SacdDlnaServer::instance().record_error(message);
     if (!static_cast<bool>(sacd_dlna_cfg::network_logging) && !static_cast<bool>(sacd_dlna_cfg::debug_diagnostics)) return;
     std::lock_guard<std::mutex> g(g_logMutex);
     FB2K_console_formatter() << "SACD DLNA [error]: " << message.c_str();
     try {
         const auto path = networkLogPath();
+        if (path.empty()) return;
         std::error_code ec;
         if (fs::exists(path, ec) && fs::file_size(path, ec) > 10ull * 1024ull * 1024ull) {
             const auto old = path + L".1";
@@ -101,8 +160,15 @@ void sendAll(SOCKET s, const char* p, size_t n, abort_callback* aborter = nullpt
 }
 
 std::wstring persistentCacheFolder() {
-    std::wstring p = pfc::stringcvt::string_wide_from_utf8(core_api::get_profile_path());
-    if (!p.empty() && p.back() != L'\\' && p.back() != L'/') p += L'\\';
+    std::wstring p = profileFolderNative();
+    if (p.empty()) {
+        // No native profile directory (should not happen): use the temp directory
+        // rather than ever writing relative to the current working directory.
+        wchar_t tmp[MAX_PATH + 2]{};
+        const DWORD n = GetTempPathW(MAX_PATH + 1, tmp);
+        p.assign(tmp, n);
+        if (!p.empty() && p.back() != L'\\' && p.back() != L'/') p += L'\\';
+    }
     p += L"foo_sacd_dlna\\cache";
     CreateDirectoryW((p.substr(0, p.rfind(L"\\"))).c_str(), nullptr);
     CreateDirectoryW(p.c_str(), nullptr);
@@ -123,7 +189,7 @@ std::wstring utf8ToWide(const char* text) {
 
 std::string cacheKeyFor(const std::string& sourcePath, t_uint32 subsong) {
     std::error_code ec;
-    const std::wstring ws = utf8ToWide(sourcePath.c_str());
+    const std::wstring ws = nativePathFromFb2k(sourcePath.c_str());
     const fs::path filePath(ws);
     const uintmax_t size = fs::file_size(filePath, ec);
     std::error_code ec2;
@@ -143,6 +209,28 @@ std::string cacheKeyFor(const std::string& sourcePath, t_uint32 subsong) {
 
 
 std::wstring cacheMetaPath(const std::wstring& dsfPath) { return dsfPath + L".json"; }
+
+
+bool jsonNumberFieldEquals(const std::string& json, const char* name, uint64_t value) {
+    const std::string needle = std::string("\"") + name + "\":" + std::to_string(value);
+    size_t pos = json.find(needle);
+    while (pos != std::string::npos) {
+        const size_t end = pos + needle.size();
+        if (end == json.size() || json[end] == ',' || json[end] == '}') return true;
+        pos = json.find(needle, pos + 1);
+    }
+    return false;
+}
+bool jsonNumberFieldEquals(const std::string& json, const char* name, int64_t value) {
+    const std::string needle = std::string("\"") + name + "\":" + std::to_string(value);
+    size_t pos = json.find(needle);
+    while (pos != std::string::npos) {
+        const size_t end = pos + needle.size();
+        if (end == json.size() || json[end] == ',' || json[end] == '}') return true;
+        pos = json.find(needle, pos + 1);
+    }
+    return false;
+}
 
 std::string cacheFileExtForMime(const std::string& mime) {
     const auto l = lowerCopy(mime);
@@ -168,15 +256,22 @@ uint64_t fileSizeSafe(const std::wstring& path) {
 bool getHeaderValue(const std::string& headers, const char* name, std::string& out) {
     const std::string lower = lowerCopy(headers);
     const std::string target = lowerCopy(name);
-    size_t p = lower.find(target);
-    while (p != std::string::npos && p != 0 && lower[p - 1] != '\n') p = lower.find(target, p + 1);
-    if (p == std::string::npos) return false;
-    const auto e = headers.find("\r\n", p);
-    const auto colon = headers.find(':', p);
-    if (colon == std::string::npos || (e != std::string::npos && colon > e)) return false;
-    out = headers.substr(colon + 1, e == std::string::npos ? std::string::npos : e - colon - 1);
-    out = trimCopy(out);
-    return true;
+    size_t lineStart = 0;
+    while (lineStart < headers.size()) {
+        const auto lineEnd = headers.find("\r\n", lineStart);
+        const size_t end = lineEnd == std::string::npos ? headers.size() : lineEnd;
+        const auto colon = headers.find(':', lineStart);
+        if (colon != std::string::npos && colon <= end) {
+            std::string headerName = lower.substr(lineStart, colon - lineStart);
+            if (trimCopy(headerName) == target) {
+                out = trimCopy(headers.substr(colon + 1, end - colon - 1));
+                return true;
+            }
+        }
+        if (lineEnd == std::string::npos) break;
+        lineStart = lineEnd + 2;
+    }
+    return false;
 }
 
 bool recvHttpRequest(SOCKET s, std::string& request) {
@@ -245,6 +340,7 @@ bool parseRange(const std::string& headers, uint64_t size, uint64_t& begin, uint
     if (!getHeaderValue(headers, "Range", value)) return true;
     value = trimCopy(value);
     if (value.rfind("bytes=", 0) != 0 || size == 0) return true;
+    if (value.find(',', 6) != std::string::npos) return false; // multipart/byteranges not implemented
     const auto dash = value.find('-', 6);
     if (dash == std::string::npos) return true;
     try {
@@ -283,7 +379,11 @@ bool parseUrl(const std::string& url, UrlParts& out) {
     const auto colon = authority.rfind(':');
     if (colon != std::string::npos && authority.find(']') == std::string::npos) {
         out.host = authority.substr(0, colon);
-        try { out.port = static_cast<uint16_t>(std::stoul(authority.substr(colon + 1))); } catch (...) { return false; }
+        try {
+            const unsigned long parsedPort = std::stoul(authority.substr(colon + 1));
+            if (parsedPort == 0 || parsedPort > 65535) return false;
+            out.port = static_cast<uint16_t>(parsedPort);
+        } catch (...) { return false; }
     } else {
         out.host = authority;
         out.port = out.scheme == "https" ? 443 : 80;
@@ -320,14 +420,32 @@ bool httpRequestSimple(const std::string& method, const std::string& url, const 
     }
     req += "\r\n";
     req += body;
-    if (send(c, req.data(), static_cast<int>(req.size()), 0) <= 0) { closesocket(c); return false; }
+    size_t sent = 0;
+    while (sent < req.size()) {
+        const int n = send(c, req.data() + sent, static_cast<int>(std::min<size_t>(req.size() - sent, 1u << 20)), 0);
+        if (n <= 0) { closesocket(c); return false; }
+        sent += static_cast<size_t>(n);
+    }
 
     std::string reply;
     char buf[16384];
+    size_t expectedTotal = 0;
     while (reply.size() < 4 * 1024 * 1024) {
         const int n = recv(c, buf, sizeof(buf), 0);
         if (n <= 0) break;
         reply.append(buf, buf + n);
+        if (!expectedTotal) {
+            const auto splitNow = reply.find("\r\n\r\n");
+            if (splitNow != std::string::npos) {
+                std::string cl;
+                if (getHeaderValue(reply.substr(0, splitNow + 4), "Content-Length", cl)) {
+                    try {
+                        expectedTotal = splitNow + 4 + static_cast<size_t>(std::stoull(cl));
+                    } catch (...) { expectedTotal = 0; }
+                }
+                if (expectedTotal && reply.size() >= expectedTotal) break;
+            }
+        } else if (reply.size() >= expectedTotal) break;
     }
     closesocket(c);
 
@@ -389,10 +507,9 @@ public:
     void on_library_initialized() override { request(); }
 
 private:
-    void request() {
-        if (!SacdDlnaServer::instance().get_status().sharingLibrary) return;
-        SacdDlnaServer::instance().request_library_refresh();
-    }
+    // request_library_refresh() already returns immediately unless the library is
+    // being shared, so there is no need to build a full status snapshot per callback.
+    void request() { SacdDlnaServer::instance().request_library_refresh(); }
 };
 
 SacdDlnaServer& SacdDlnaServer::instance() {
@@ -400,11 +517,26 @@ SacdDlnaServer& SacdDlnaServer::instance() {
     return x;
 }
 
+void SacdDlnaServer::record_error(const std::string& message) {
+    std::lock_guard<std::mutex> g(m_diagMutex);
+    m_lastError = message;
+}
+
 void SacdDlnaServer::set_enabled(bool enabled) {
     if (enabled) start(); else stop();
 }
 
 void SacdDlnaServer::start() {
+    std::lock_guard<std::mutex> lifecycle(m_lifecycleMutex);
+    if (m_running.load()) return;
+
+    // Recover cleanly from a previous failed start where worker thread objects
+    // are still joinable even though m_running became false.
+    if (m_httpThread.joinable() || m_ssdpThread.joinable() || !m_clientThreads.empty() || !m_prefetchThreads.empty() || m_wsaStarted.load()) {
+        m_running = false;
+        stopUnlocked();
+    }
+
     bool expected = false;
     if (!m_running.compare_exchange_strong(expected, true)) return;
 
@@ -439,13 +571,17 @@ void SacdDlnaServer::start() {
         m_remoteHttpSeen = false;
         m_remoteSsdpSeen = false;
         m_lastRemotePeer.clear();
+        m_lastError.clear();
     }
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         m_running = false;
-        throw std::runtime_error("WSAStartup failed");
+        std::lock_guard<std::mutex> g(m_diagMutex);
+        m_networkDiagnostic = "WSAStartup failed";
+        return;
     }
+    m_wsaStarted = true;
 
     {
         std::lock_guard<std::mutex> g(m_diagMutex);
@@ -453,22 +589,31 @@ void SacdDlnaServer::start() {
         m_networkDiagnostic = "Server starting; waiting for HTTP/SSDP sockets";
     }
 
-    m_libraryTracker = std::make_shared<library_tracker>();
-    m_httpThread = std::thread([this] { httpLoop(); });
-    m_ssdpThread = std::thread([this] { ssdpLoop(); });
+    try {
+        m_libraryTracker = std::make_shared<library_tracker>();
+        m_httpThread = std::thread([this] { httpLoop(); });
+        m_ssdpThread = std::thread([this] { ssdpLoop(); });
+    } catch (const std::exception& e) {
+        m_running = false;
+        { std::lock_guard<std::mutex> g(m_diagMutex); m_networkDiagnostic = std::string("Unable to start worker threads: ") + e.what(); }
+        stopUnlocked();
+        return;
+    } catch (...) {
+        m_running = false;
+        { std::lock_guard<std::mutex> g(m_diagMutex); m_networkDiagnostic = "Unable to start worker threads"; }
+        stopUnlocked();
+        return;
+    }
+
     networkLog("server started on TCP " + std::to_string(m_port));
     console::print("SACD DLNA: BROADCASTING / ACTIVE");
 }
 
-void SacdDlnaServer::stop() {
-    if (!m_running.exchange(false)) return;
-
-    {
-        std::lock_guard<std::mutex> g(m_diagMutex);
-        m_networkDiagnostic = "Server stopping";
-    }
+void SacdDlnaServer::stopUnlocked() {
+    m_running = false;
 
     if (m_httpListen != INVALID_SOCKET) {
+        shutdown(m_httpListen, SD_BOTH);
         closesocket(m_httpListen);
         m_httpListen = INVALID_SOCKET;
     }
@@ -484,19 +629,22 @@ void SacdDlnaServer::stop() {
     }
     {
         std::lock_guard<std::mutex> g(m_cacheMutex);
-        for (auto& kv : m_cacheJobs) kv.second->aborter->set();
+        for (auto& kv : m_cacheJobs) if (kv.second && kv.second->aborter) kv.second->aborter->set();
     }
 
     clearPrefetchThreads();
     for (auto& t : m_clientThreads) if (t.joinable()) t.join();
     m_clientThreads.clear();
+    m_finishedClientThreads.clear();
     for (auto& t : m_prefetchThreads) if (t.joinable()) t.join();
     {
         std::lock_guard<std::mutex> g(m_prefetchMutex);
         m_prefetchThreads.clear();
+        m_finishedPrefetchThreads.clear();
         m_prefetchAborters.clear();
         m_prefetchKeys.clear();
         m_prefetchActive = false;
+        m_prefetchActiveCount = 0;
         m_prefetchState = "IDLE";
         m_prefetchTitle.clear();
     }
@@ -507,12 +655,37 @@ void SacdDlnaServer::stop() {
 
     if (m_ssdpThread.joinable()) m_ssdpThread.join();
     m_libraryTracker.reset();
-    WSACleanup();
+
+    {
+        std::lock_guard<std::mutex> g(m_diagMutex);
+        m_httpReady = false;
+        m_ssdpReady = false;
+        m_networkDiagnostic = "Stopped";
+        m_networkVisibility = "SERVER STOPPED";
+    }
+
+    if (m_wsaStarted.exchange(false)) WSACleanup();
     networkLog("server stopped");
+}
+
+void SacdDlnaServer::stop() {
+    std::lock_guard<std::mutex> lifecycle(m_lifecycleMutex);
+    stopUnlocked();
     console::print("SACD DLNA: broadcasting stopped");
 }
 
 size_t SacdDlnaServer::shared_count() const { return m_sharedCount.load(); }
+
+uint64_t SacdDlnaServer::cached_persistent_cache_bytes() const {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> g(m_cacheStatsMutex);
+    if (m_cacheStatsTick.time_since_epoch().count() == 0 ||
+        std::chrono::duration_cast<std::chrono::seconds>(now - m_cacheStatsTick).count() >= 2) {
+        m_cachedCacheBytes = persistent_cache_bytes();
+        m_cacheStatsTick = now;
+    }
+    return m_cachedCacheBytes;
+}
 
 SacdDlnaStatus SacdDlnaServer::get_status() const {
     SacdDlnaStatus s;
@@ -603,6 +776,7 @@ SacdDlnaStatus SacdDlnaServer::get_status() const {
         s.networkVisibility = m_networkVisibility.c_str();
         s.ssdpLastPeer = m_ssdpLastPeer.c_str();
         s.networkDiagnostic = m_networkDiagnostic.c_str();
+        s.lastError = m_lastError.c_str();
     }
 
     s.stabilityMode = sacd_dlna_cfg::stability_mode;
@@ -613,8 +787,6 @@ SacdDlnaStatus SacdDlnaServer::get_status() const {
         s.conversionPercent = m_conversionPercent;
         s.prebufferBytes = m_prebufferBytes;
         s.prebufferTargetBytes = m_prebufferTargetBytes;
-        s.prefetchTitle = m_prefetchTitle.c_str();
-        s.prefetchState = m_prefetchState.c_str();
         if (!s.streamingActive || !s.prebufferTargetBytes) s.bufferState = s.streamingActive ? "STREAMING / NO READ-AHEAD" : "IDLE";
         else if (s.prebufferBytes == 0) s.bufferState = "DEPLETED / RISK OF UNDERRUN";
         else {
@@ -626,7 +798,12 @@ SacdDlnaStatus SacdDlnaServer::get_status() const {
         if (s.nominalBitrate && s.bytesPerSecond) s.networkHeadroom = static_cast<double>(s.bytesPerSecond) / static_cast<double>(s.nominalBitrate);
         if (s.requiredBytesPerSecond && s.bytesPerSecond) s.realtimeMultiplier = static_cast<double>(s.bytesPerSecond) / static_cast<double>(s.requiredBytesPerSecond);
     }
-    s.cacheBytes = persistent_cache_bytes();
+    {
+        std::lock_guard<std::mutex> g(m_prefetchMutex);
+        s.prefetchTitle = m_prefetchTitle.c_str();
+        s.prefetchState = m_prefetchState.c_str();
+    }
+    s.cacheBytes = cached_persistent_cache_bytes();
     return s;
 }
 
@@ -637,6 +814,14 @@ void SacdDlnaServer::updateStreamStart(const std::string& peerIp, const DsdTrack
                                        uint32_t sourceChannels, uint32_t sourceBitsPerSample) {
     std::lock_guard<std::mutex> g(m_rateMutex);
     ++m_activeStreams;
+    if (m_activeStreams == 1) {
+        m_streamBytes = 0;
+        m_rateBytes = 0;
+        m_lastRateBytes = 0;
+        m_currentBps = 0;
+        m_lastRateTick = std::chrono::steady_clock::now();
+        m_streamStartTick = m_lastRateTick;
+    }
     m_clientIp = peerIp;
     m_streamTitle = track.title;
     m_streamArtist = track.artist;
@@ -654,12 +839,6 @@ void SacdDlnaServer::updateStreamStart(const std::string& peerIp, const DsdTrack
     m_sourceSampleRate = sourceSampleRate;
     m_sourceChannels = sourceChannels;
     m_sourceBitsPerSample = sourceBitsPerSample;
-    m_streamBytes = 0;
-    m_rateBytes = 0;
-    m_lastRateBytes = 0;
-    m_currentBps = 0;
-    m_lastRateTick = std::chrono::steady_clock::now();
-    m_streamStartTick = m_lastRateTick;
 }
 
 void SacdDlnaServer::updateStreamBytes(uint64_t bytes) {
@@ -706,15 +885,8 @@ void SacdDlnaServer::updateLastHttpRequest(const std::string& request) {
 
 namespace {
 std::string headerValueCI(const std::string& response, const char* header) {
-    std::string lower = lowerCopy(response);
-    std::string target = lowerCopy(header);
-    if (!target.empty() && target.back() != ':') target += ':';
-    size_t p = lower.find(target);
-    while (p != std::string::npos && p != 0 && lower[p - 1] != '\n') p = lower.find(target, p + 1);
-    if (p == std::string::npos) return {};
-    const auto start = p + target.size();
-    const auto end = lower.find("\r\n", start);
-    return trimCopy(response.substr(start, end == std::string::npos ? std::string::npos : end - start));
+    std::string out;
+    return getHeaderValue(response, header, out) ? out : std::string{};
 }
 }
 
@@ -940,33 +1112,78 @@ std::string SacdDlnaServer::didlProtocolInfo(const std::string& mime) {
 std::wstring SacdDlnaServer::cacheFolder() const { return persistentCacheFolder(); }
 
 std::string SacdDlnaServer::localAddress() const {
-    char host[256]{};
-    if (gethostname(host, sizeof(host)) != 0) return "127.0.0.1";
-    addrinfo hints{}; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
-    addrinfo* res = nullptr;
-    if (getaddrinfo(host, nullptr, &hints, &res) != 0 || !res) return "127.0.0.1";
-    std::string fallback = "127.0.0.1";
-    for (addrinfo* it = res; it; it = it->ai_next) {
-        const auto* sin = reinterpret_cast<const sockaddr_in*>(it->ai_addr);
-        if (!sin) continue;
-        char ip[INET_ADDRSTRLEN]{};
-        inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
-        const std::string value = ip;
-        if (value != "127.0.0.1" && !value.empty() && value.rfind("169.254.", 0) != 0) { fallback = value; break; }
+    ULONG size = 16 * 1024;
+    std::vector<uint8_t> storage(size);
+    IP_ADAPTER_ADDRESSES* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+    ULONG rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS, nullptr, adapters, &size);
+    if (rc == ERROR_BUFFER_OVERFLOW) {
+        storage.resize(size);
+        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+        rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS, nullptr, adapters, &size);
     }
-    freeaddrinfo(res);
-    return fallback;
+    if (rc == NO_ERROR) {
+        std::string best;
+        int bestScore = -1;
+        for (auto* a = adapters; a; a = a->Next) {
+            if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK || !a->FirstUnicastAddress) continue;
+            const bool hasGateway = a->FirstGatewayAddress != nullptr;
+            for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+                if (!u->Address.lpSockaddr || u->Address.lpSockaddr->sa_family != AF_INET) continue;
+                const auto* sin = reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr);
+                char ip[INET_ADDRSTRLEN]{};
+                inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
+                const std::string value = ip;
+                if (value.empty() || value == "127.0.0.1" || value.rfind("169.254.", 0) == 0) continue;
+                const uint32_t addr = ntohl(sin->sin_addr.s_addr);
+                const bool private10 = (addr & 0xFF000000u) == 0x0A000000u;
+                const bool private172 = (addr & 0xFFF00000u) == 0xAC100000u;
+                const bool private192 = (addr & 0xFFFF0000u) == 0xC0A80000u;
+                int score = 0;
+                if (private10 || private172 || private192) score += 100;
+                if (hasGateway) score += 50;
+                if (a->IfType == IF_TYPE_ETHERNET_CSMACD) score += 20;
+                if (a->IfType == IF_TYPE_IEEE80211) score += 20;
+                if (a->IfType == IF_TYPE_PPP) score -= 40;
+                if (a->IfType == IF_TYPE_TUNNEL) score -= 60;
+                if (score > bestScore) { bestScore = score; best = value; }
+            }
+        }
+        if (!best.empty()) return best;
+    }
+    // Conservative fallback: resolve the host name only when adapter enumeration fails.
+    char host[256]{};
+    if (gethostname(host, sizeof(host)) == 0) {
+        addrinfo hints{}; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
+        addrinfo* res = nullptr;
+        if (getaddrinfo(host, nullptr, &hints, &res) == 0 && res) {
+            std::string fallback = "127.0.0.1";
+            for (addrinfo* it = res; it; it = it->ai_next) {
+                const auto* sin = reinterpret_cast<const sockaddr_in*>(it->ai_addr);
+                if (!sin) continue;
+                char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
+                const std::string value = ip;
+                if (value != "127.0.0.1" && !value.empty() && value.rfind("169.254.", 0) != 0) { fallback = value; break; }
+            }
+            freeaddrinfo(res);
+            return fallback;
+        }
+    }
+    return "127.0.0.1";
 }
 
 std::string SacdDlnaServer::makeDeviceXml() const {
     const std::string name = xmlEscape(sacd_dlna_cfg::server_name.get().c_str());
-    const std::string base = "http://" + localAddress() + ":" + std::to_string(m_port);
+    std::string lanIp;
+    { std::lock_guard<std::mutex> g(m_diagMutex); lanIp = m_localIp; }
+    if (lanIp.empty()) lanIp = localAddress();
+    const std::string base = "http://" + lanIp + ":" + std::to_string(m_port);
     return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-        "<root xmlns=\"urn:schemas-upnp-org:device-1-0\"><specVersion><major>1</major><minor>0</minor></specVersion>"
+        "<root xmlns=\"urn:schemas-upnp-org:device-1-0\" xmlns:dlna=\"urn:schemas-dlna-org:device-1-0\"><specVersion><major>1</major><minor>0</minor></specVersion>"
         "<device><deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>"
+        "<dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>"
         "<friendlyName>" + name + "</friendlyName><manufacturer>foo_sacd_dlna</manufacturer>"
         "<manufacturerURL>https://www.foobar2000.org/</manufacturerURL><modelName>foobar2000 SACD DLNA</modelName>"
-        "<modelDescription>Native DSD UPnP Media Server</modelDescription><modelNumber>0.8-alpha3-j</modelNumber>"
+        "<modelDescription>Native DSD UPnP Media Server</modelDescription><modelNumber>" + std::string(kVersion) + "</modelNumber>"
         "<serialNumber>foo-sacd-dlna</serialNumber><UDN>" + kUuid + "</UDN><presentationURL>" + base + "/status</presentationURL>"
         "<serviceList>"
         "<service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType><serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>"
@@ -992,6 +1209,8 @@ std::string SacdDlnaServer::makeContentDirectoryScpd() const {
         "<argument><name>TotalMatches</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>"
         "<argument><name>UpdateID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_UpdateID</relatedStateVariable></argument>"
         "</argumentList></action>"
+        "<action><name>GetSearchCapabilities</name><argumentList><argument><name>SearchCaps</name><direction>out</direction><relatedStateVariable>SearchCapabilities</relatedStateVariable></argument></argumentList></action>"
+        "<action><name>GetSortCapabilities</name><argumentList><argument><name>SortCaps</name><direction>out</direction><relatedStateVariable>SortCapabilities</relatedStateVariable></argument></argumentList></action>"
         "<action><name>GetSystemUpdateID</name><argumentList><argument><name>Id</name><direction>out</direction><relatedStateVariable>SystemUpdateID</relatedStateVariable></argument></argumentList></action>"
         "</actionList><serviceStateTable>"
         "<stateVariable sendEvents=\"no\"><name>A_ARG_TYPE_ObjectID</name><dataType>string</dataType></stateVariable>"
@@ -1001,6 +1220,8 @@ std::string SacdDlnaServer::makeContentDirectoryScpd() const {
         "<stateVariable sendEvents=\"no\"><name>A_ARG_TYPE_Count</name><dataType>ui4</dataType></stateVariable>"
         "<stateVariable sendEvents=\"no\"><name>A_ARG_TYPE_SortCriteria</name><dataType>string</dataType></stateVariable>"
         "<stateVariable sendEvents=\"no\"><name>A_ARG_TYPE_Result</name><dataType>string</dataType></stateVariable>"
+        "<stateVariable sendEvents=\"no\"><name>SearchCapabilities</name><dataType>string</dataType></stateVariable>"
+        "<stateVariable sendEvents=\"no\"><name>SortCapabilities</name><dataType>string</dataType></stateVariable>"
         "<stateVariable sendEvents=\"no\"><name>SystemUpdateID</name><dataType>ui4</dataType></stateVariable>"
         "</serviceStateTable></scpd>";
 }
@@ -1068,14 +1289,17 @@ bool SacdDlnaServer::readDsfHeader(const std::wstring& path, uint32_t& rate, uin
 std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadataOnly,
                                        unsigned startingIndex, unsigned requestedCount,
                                        unsigned& numberReturned, unsigned& totalMatches) const {
-    std::vector<Item> items;
-    std::vector<Artist> artists;
-    std::vector<Album> albums;
-    uint32_t updateId = 1;
-    {
-        std::lock_guard<std::mutex> g(m_mutex);
-        items = m_items; artists = m_artists; albums = m_albums; updateId = m_updateId;
-    }
+    // localAddress() may resolve the host name (blocking), so do it BEFORE taking the
+    // library lock. The response is built straight from the shared data under the lock
+    // (no per-request copy of the library).
+    const std::string base = "http://" + localAddress() + ":" + std::to_string(m_port);
+    std::lock_guard<std::mutex> libraryLock(m_mutex);
+    const std::vector<Item>& items = m_items;
+    const std::vector<Artist>& artists = m_artists;
+    const std::vector<Album>& albums = m_albums;
+    const std::vector<Genre>& genres = m_genres;
+    const std::vector<Folder>& folders = m_folders;
+    const uint32_t updateId = m_updateId;
 
     numberReturned = totalMatches = 0;
     const std::string ns = " xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\""
@@ -1083,17 +1307,25 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
         " xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\""
         " xmlns:dlna=\"urn:schemas-dlna-org:metadata-1-0/\"";
     std::string out = "<DIDL-Lite" + ns + ">";
-    const std::string base = "http://" + localAddress() + ":" + std::to_string(m_port);
 
-    auto findArtist = [&](uint32_t id) -> const Artist* { for (const auto& x : artists) if (x.id == id) return &x; return nullptr; };
-    auto findAlbum = [&](uint32_t id) -> const Album* { for (const auto& x : albums) if (x.id == id) return &x; return nullptr; };
-    auto findItem = [&](uint32_t id) -> const Item* { for (const auto& x : items) if (x.id == id) return &x; return nullptr; };
+    // id -> object lookups (hash maps rebuilt by publish()).
+    auto findArtist = [&](uint32_t id) -> const Artist* { const auto it = m_artistIndex.find(id); return it == m_artistIndex.end() ? nullptr : &artists[it->second]; };
+    auto findAlbum = [&](uint32_t id) -> const Album* { const auto it = m_albumIndex.find(id); return it == m_albumIndex.end() ? nullptr : &albums[it->second]; };
+    auto findGenre = [&](uint32_t id) -> const Genre* { const auto it = m_genreIndex.find(id); return it == m_genreIndex.end() ? nullptr : &genres[it->second]; };
+    auto findFolder = [&](uint32_t id) -> const Folder* { const auto it = m_folderIndex.find(id); return it == m_folderIndex.end() ? nullptr : &folders[it->second]; };
+    auto findItem = [&](uint32_t id) -> const Item* { const auto it = m_itemIndex.find(id); return it == m_itemIndex.end() ? nullptr : &items[it->second]; };
+    auto isPrefixed = [](const std::string& id, const char* prefix) { return id.rfind(prefix, 0) == 0; };
+    auto parseId = [](const std::string& id, const char* prefix) -> uint32_t {
+        try { return static_cast<uint32_t>(std::stoul(id.substr(strlen(prefix)))); } catch (...) { return 0; }
+    };
 
     auto artUri = [&](uint32_t albumId) { return base + "/art/" + std::to_string(albumId); };
 
-    auto appendContainer = [&](const std::string& id, const std::string& parent, const std::string& title, const char* cls, size_t childCount, uint32_t artAlbumId = 0) {
+    auto appendContainer = [&](const std::string& id, const std::string& parent, const std::string& title, const char* cls, size_t childCount,
+                               uint32_t artAlbumId = 0, const std::string& creator = std::string()) {
         out += "<container id=\"" + xmlEscape(id) + "\" parentID=\"" + xmlEscape(parent) + "\" restricted=\"1\" childCount=\"" + std::to_string(childCount) + "\">";
         out += "<dc:title>" + xmlEscape(title) + "</dc:title><upnp:class>" + cls + "</upnp:class>";
+        if (!creator.empty()) out += "<dc:creator>" + xmlEscape(creator) + "</dc:creator>";
         if (artAlbumId) out += "<upnp:albumArtURI>" + artUri(artAlbumId) + "</upnp:albumArtURI>";
         out += "</container>";
     };
@@ -1137,64 +1369,154 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
         out += "</item>";
     };
 
+    // ---- the container tree ----
+    // 0 (root) -> Artists -> artist -> album -> tracks
+    //          -> Albums  -> album -> tracks
+    //          -> Genres  -> genre -> tracks
+    //          -> Folders -> folder -> (folders and tracks)
+    //          -> All Tracks -> tracks
+    const Folder* rootFolder = findFolder(m_folderRootId);
+    struct RootEntry { const char* id; const char* title; const char* cls; size_t count; };
+    const RootEntry rootEntries[] = {
+        { kArtistsObject,  "Artists",    "object.container.person.musicArtist", artists.size() },
+        { kAlbumsObject,   "Albums",     "object.container.album.musicAlbum",   m_albumsByTitle.size() },
+        { kGenresObject,   "Genres",     "object.container.genre.musicGenre",   genres.size() },
+        { kFoldersObject,  "Folders",    "object.container.storageFolder",      rootFolder ? rootFolder->folderIds.size() + rootFolder->itemIds.size() : 0 },
+        { kAllTracksObject, "All Tracks", "object.container",                   m_allTrackIds.size() },
+    };
+    constexpr size_t kRootEntryCount = sizeof(rootEntries) / sizeof(rootEntries[0]);
+    auto findRootEntry = [&](const std::string& id) -> const RootEntry* { for (const auto& e : rootEntries) if (id == e.id) return &e; return nullptr; };
+
+    const auto artistContainerId = [&](uint32_t id) { return std::string(kArtistPrefix) + std::to_string(id); };
+    const auto albumContainerId = [&](uint32_t id) { return std::string(kAlbumPrefix) + std::to_string(id); };
+    const auto genreContainerId = [&](uint32_t id) { return std::string(kGenrePrefix) + std::to_string(id); };
+    const auto folderContainerId = [&](uint32_t id) { return std::string(kFolderPrefix) + std::to_string(id); };
+    const auto trackObjectId = [&](uint32_t id) { return std::string(kTrackPrefix) + std::to_string(id); };
+    // A folder's parent is the "Folders" root entry when it hangs directly off the (collapsed) root.
+    const auto folderParentId = [&](const Folder& f) { return f.parentId == m_folderRootId ? std::string(kFoldersObject) : folderContainerId(f.parentId); };
+
+    auto appendAlbumContainer = [&](const Album& alb, const std::string& parent, bool withCreator) {
+        const Artist* artist = withCreator ? findArtist(alb.artistId) : nullptr;
+        appendContainer(albumContainerId(alb.id), parent, alb.title, "object.container.album.musicAlbum", alb.itemIds.size(), alb.id, artist ? artist->name : std::string());
+    };
+
+    // Applies StartingIndex/RequestedCount to a list of `total` children. emit(n) appends child n and
+    // returns true when it produced an element. StartingIndex + RequestedCount is done in 64 bits
+    // (some renderers send RequestedCount = 0xFFFFFFFF).
+    auto page = [&](unsigned total, auto&& emit) {
+        totalMatches = total;
+        const unsigned requestedEnd = static_cast<unsigned>(std::min<uint64_t>(static_cast<uint64_t>(startingIndex) + requestedCount, UINT_MAX));
+        const unsigned end = requestedCount ? (requestedEnd < total ? requestedEnd : total) : total;
+        for (unsigned n = startingIndex; n < end; ++n) if (emit(n)) ++numberReturned;
+    };
+
+    auto emitTrackList = [&](const std::vector<uint32_t>& ids, const std::string& parent) {
+        page(static_cast<unsigned>(ids.size()), [&](unsigned n) {
+            const Item* item = findItem(ids[n]);
+            if (!item) return false;
+            appendTrack(*item, parent, trackObjectId(item->id));
+            return true;
+        });
+    };
+
+    auto emitFolderChildren = [&](const Folder& f, const std::string& parent) {
+        const size_t subfolders = f.folderIds.size();
+        page(static_cast<unsigned>(subfolders + f.itemIds.size()), [&](unsigned n) {
+            if (n < subfolders) {
+                const Folder* sub = findFolder(f.folderIds[n]);
+                if (!sub) return false;
+                appendContainer(folderContainerId(sub->id), parent, sub->name, "object.container.storageFolder", sub->folderIds.size() + sub->itemIds.size());
+                return true;
+            }
+            const Item* item = findItem(f.itemIds[n - subfolders]);
+            if (!item) return false;
+            appendTrack(*item, parent, trackObjectId(item->id));
+            return true;
+        });
+    };
+
     if (metadataOnly) {
         if (objectId == kRootObject) {
-            appendContainer(kRootObject, "-1", "foobar2000 SACD DSD", "object.container", 1);
+            appendContainer(kRootObject, "-1", "foobar2000 SACD DSD", "object.container", kRootEntryCount);
             numberReturned = totalMatches = 1;
-        } else if (objectId == kArtistsObject) {
-            appendContainer(kArtistsObject, kRootObject, "Artists", "object.container.person.musicArtist", artists.size());
+        } else if (const RootEntry* entry = findRootEntry(objectId)) {
+            appendContainer(entry->id, kRootObject, entry->title, entry->cls, entry->count);
             numberReturned = totalMatches = 1;
-        } else if (objectId.rfind(kArtistPrefix, 0) == 0) {
-            uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kArtistPrefix))); } catch (...) {}
-            if (const auto* a = findArtist(id)) { appendContainer(objectId, kArtistsObject, a->name, "object.container.person.musicArtist", a->albumIds.size()); numberReturned = totalMatches = 1; }
-        } else if (objectId.rfind(kAlbumPrefix, 0) == 0) {
-            uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kAlbumPrefix))); } catch (...) {}
-            if (const auto* a = findAlbum(id)) { appendContainer(objectId, std::string(kArtistPrefix) + std::to_string(a->artistId), a->title, "object.container.album.musicAlbum", a->itemIds.size(), a->id); numberReturned = totalMatches = 1; }
-        } else if (objectId.rfind(kTrackPrefix, 0) == 0) {
-            uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kTrackPrefix))); } catch (...) {}
-            if (const auto* i = findItem(id)) { const auto parent = std::string(kAlbumPrefix) + std::to_string(i->albumId); appendTrack(*i, parent, objectId); numberReturned = totalMatches = 1; }
+        } else if (isPrefixed(objectId, kArtistPrefix)) {
+            if (const Artist* a = findArtist(parseId(objectId, kArtistPrefix))) {
+                appendContainer(objectId, kArtistsObject, a->name, "object.container.person.musicArtist", a->albumIds.size());
+                numberReturned = totalMatches = 1;
+            }
+        } else if (isPrefixed(objectId, kAlbumPrefix)) {
+            if (const Album* a = findAlbum(parseId(objectId, kAlbumPrefix))) {
+                appendContainer(objectId, artistContainerId(a->artistId), a->title, "object.container.album.musicAlbum", a->itemIds.size(), a->id);
+                numberReturned = totalMatches = 1;
+            }
+        } else if (isPrefixed(objectId, kGenrePrefix)) {
+            if (const Genre* g = findGenre(parseId(objectId, kGenrePrefix))) {
+                appendContainer(objectId, kGenresObject, g->name, "object.container.genre.musicGenre", g->itemIds.size());
+                numberReturned = totalMatches = 1;
+            }
+        } else if (isPrefixed(objectId, kFolderPrefix)) {
+            if (const Folder* f = findFolder(parseId(objectId, kFolderPrefix))) {
+                appendContainer(objectId, folderParentId(*f), f->name, "object.container.storageFolder", f->folderIds.size() + f->itemIds.size());
+                numberReturned = totalMatches = 1;
+            }
+        } else if (isPrefixed(objectId, kTrackPrefix)) {
+            if (const Item* i = findItem(parseId(objectId, kTrackPrefix))) {
+                appendTrack(*i, albumContainerId(i->albumId), objectId);
+                numberReturned = totalMatches = 1;
+            }
         }
     } else if (objectId == kRootObject) {
-        appendContainer(kArtistsObject, kRootObject, "Artists", "object.container.person.musicArtist", artists.size());
-        numberReturned = totalMatches = 1;
+        page(static_cast<unsigned>(kRootEntryCount), [&](unsigned n) {
+            const RootEntry& e = rootEntries[n];
+            appendContainer(e.id, kRootObject, e.title, e.cls, e.count);
+            return true;
+        });
     } else if (objectId == kArtistsObject) {
-        totalMatches = static_cast<unsigned>(artists.size());
-        const unsigned requestedEnd = startingIndex + requestedCount;
-            const unsigned end = requestedCount ? (requestedEnd < totalMatches ? requestedEnd : totalMatches) : totalMatches;
-        for (unsigned n = startingIndex; n < end; ++n) {
-            const auto& a = artists[n];
-            appendContainer(std::string(kArtistPrefix) + std::to_string(a.id), kArtistsObject, a.name, "object.container.person.musicArtist", a.albumIds.size());
-            ++numberReturned;
+        page(static_cast<unsigned>(artists.size()), [&](unsigned n) {
+            const Artist& a = artists[n];
+            appendContainer(artistContainerId(a.id), kArtistsObject, a.name, "object.container.person.musicArtist", a.albumIds.size());
+            return true;
+        });
+    } else if (isPrefixed(objectId, kArtistPrefix)) {
+        if (const Artist* a = findArtist(parseId(objectId, kArtistPrefix))) {
+            page(static_cast<unsigned>(a->albumIds.size()), [&](unsigned n) {
+                const Album* alb = findAlbum(a->albumIds[n]);
+                if (!alb) return false;
+                appendAlbumContainer(*alb, objectId, false);
+                return true;
+            });
         }
-    } else if (objectId.rfind(kArtistPrefix, 0) == 0) {
-        uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kArtistPrefix))); } catch (...) {}
-        const auto* a = findArtist(id);
-        if (a) {
-            totalMatches = static_cast<unsigned>(a->albumIds.size());
-            const unsigned requestedEnd = startingIndex + requestedCount;
-            const unsigned end = requestedCount ? (requestedEnd < totalMatches ? requestedEnd : totalMatches) : totalMatches;
-            for (unsigned n = startingIndex; n < end; ++n) {
-                const auto* alb = findAlbum(a->albumIds[n]); if (!alb) continue;
-                appendContainer(std::string(kAlbumPrefix) + std::to_string(alb->id), objectId, alb->title, "object.container.album.musicAlbum", alb->itemIds.size(), alb->id);
-                ++numberReturned;
-            }
+    } else if (objectId == kAlbumsObject) {
+        page(static_cast<unsigned>(m_albumsByTitle.size()), [&](unsigned n) {
+            const Album* alb = findAlbum(m_albumsByTitle[n]);
+            if (!alb) return false;
+            appendAlbumContainer(*alb, kAlbumsObject, true);   // creator shown: many albums share a title
+            return true;
+        });
+    } else if (isPrefixed(objectId, kAlbumPrefix)) {
+        if (const Album* a = findAlbum(parseId(objectId, kAlbumPrefix))) emitTrackList(a->itemIds, objectId);
+    } else if (objectId == kGenresObject) {
+        page(static_cast<unsigned>(genres.size()), [&](unsigned n) {
+            const Genre& g = genres[n];
+            appendContainer(genreContainerId(g.id), kGenresObject, g.name, "object.container.genre.musicGenre", g.itemIds.size());
+            return true;
+        });
+    } else if (isPrefixed(objectId, kGenrePrefix)) {
+        if (const Genre* g = findGenre(parseId(objectId, kGenrePrefix))) emitTrackList(g->itemIds, objectId);
+    } else if (objectId == kFoldersObject) {
+        if (rootFolder) emitFolderChildren(*rootFolder, objectId);
+    } else if (isPrefixed(objectId, kFolderPrefix)) {
+        if (const Folder* f = findFolder(parseId(objectId, kFolderPrefix))) emitFolderChildren(*f, objectId);
+    } else if (objectId == kAllTracksObject) {
+        emitTrackList(m_allTrackIds, objectId);
+    } else if (isPrefixed(objectId, kTrackPrefix)) {
+        if (const Item* i = findItem(parseId(objectId, kTrackPrefix))) {
+            appendTrack(*i, albumContainerId(i->albumId), objectId);
+            numberReturned = totalMatches = 1;
         }
-    } else if (objectId.rfind(kAlbumPrefix, 0) == 0) {
-        uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kAlbumPrefix))); } catch (...) {}
-        const auto* a = findAlbum(id);
-        if (a) {
-            totalMatches = static_cast<unsigned>(a->itemIds.size());
-            const unsigned requestedEnd = startingIndex + requestedCount;
-            const unsigned end = requestedCount ? (requestedEnd < totalMatches ? requestedEnd : totalMatches) : totalMatches;
-            for (unsigned n = startingIndex; n < end; ++n) {
-                const auto* item = findItem(a->itemIds[n]); if (!item) continue;
-                appendTrack(*item, objectId, std::string(kTrackPrefix) + std::to_string(item->id));
-                ++numberReturned;
-            }
-        }
-    } else if (objectId.rfind(kTrackPrefix, 0) == 0) {
-        uint32_t id = 0; try { id = std::stoul(objectId.substr(strlen(kTrackPrefix))); } catch (...) {}
-        if (const auto* i = findItem(id)) { appendTrack(*i, std::string(kAlbumPrefix) + std::to_string(i->albumId), objectId); numberReturned = totalMatches = 1; }
     }
 
     out += "</DIDL-Lite>";
@@ -1208,12 +1530,13 @@ std::string SacdDlnaServer::browseResponse(const std::string& objectId, const st
     const bool metadataOnly = _stricmp(browseFlag.c_str(), "BrowseMetadata") == 0;
     unsigned numberReturned = 0, totalMatches = 0;
     const std::string didl = browseDidl(objectId, metadataOnly, startingIndex, requestedCount, numberReturned, totalMatches);
-    const auto st = get_status();
+    uint32_t updateId = 1;
+    { std::lock_guard<std::mutex> g(m_mutex); updateId = m_updateId; }   // get_status() would scan the cache folder just for this
     return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">"
         "<s:Body><u:BrowseResponse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">"
         "<Result>" + xmlEscape(didl) + "</Result><NumberReturned>" + std::to_string(numberReturned) + "</NumberReturned>"
-        "<TotalMatches>" + std::to_string(totalMatches) + "</TotalMatches><UpdateID>" + std::to_string(st.updateId) + "</UpdateID>"
+        "<TotalMatches>" + std::to_string(totalMatches) + "</TotalMatches><UpdateID>" + std::to_string(updateId) + "</UpdateID>"
         "</u:BrowseResponse></s:Body></s:Envelope>";
 }
 
@@ -1276,14 +1599,15 @@ bool SacdDlnaServer::ensureProcessedDsf(const Item& item, std::wstring& cachePat
         if (!isRegularFile(manifest)) return false;
         std::ifstream mf(manifest, std::ios::binary);
         std::string line((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
-        const auto decoder = std::string("\"decoderVersion\":\"");
-        pfc::string8 dspVersion;
+        pfc::string8 sacdVersion, dspVersion;
+        sacd_plugin_installed(&sacdVersion);
         dsd_processor_installed(&dspVersion);
         const auto dspMarker = std::string("\"dspPreset\":\"") + DsdProcessorBridge::preset_fingerprint() + "\"";
-        return line.find("\"cacheVersion\":" + std::to_string(kCacheFormatVersion)) != std::string::npos &&
-            line.find("\"subsong\":" + std::to_string(item.subsong)) != std::string::npos &&
-            line.find("\"sourceSize\":" + std::to_string(item.sourceSize)) != std::string::npos &&
-            line.find("\"sourceWriteTime\":" + std::to_string(item.sourceWriteTime)) != std::string::npos &&
+        return jsonNumberFieldEquals(line, "cacheVersion", static_cast<uint64_t>(kCacheFormatVersion)) &&
+            jsonNumberFieldEquals(line, "subsong", static_cast<uint64_t>(item.subsong)) &&
+            jsonNumberFieldEquals(line, "sourceSize", static_cast<uint64_t>(item.sourceSize)) &&
+            jsonNumberFieldEquals(line, "sourceWriteTime", static_cast<int64_t>(item.sourceWriteTime)) &&
+            line.find("\"decoderVersion\":\"" + std::string(sacdVersion.c_str()) + "\"") != std::string::npos &&
             line.find("\"dspVersion\":\"" + std::string(dspVersion.c_str()) + "\"") != std::string::npos &&
             line.find(dspMarker) != std::string::npos && fileSize > 84;
     };
@@ -1436,12 +1760,13 @@ bool SacdDlnaServer::ensureCached(const Item& item, std::wstring& cachePath, Dsd
         if (!isRegularFile(manifest)) return false;
         std::ifstream mf(manifest, std::ios::binary);
         std::string line((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
-        const auto version = std::string("\"cacheVersion\":") + std::to_string(kCacheFormatVersion);
-        const auto source = std::string("\"subsong\":") + std::to_string(item.subsong);
-        const auto sourceSize = std::string("\"sourceSize\":") + std::to_string(item.sourceSize);
-        const auto sourceTime = std::string("\"sourceWriteTime\":") + std::to_string(item.sourceWriteTime);
-        return line.find(version) != std::string::npos && line.find(source) != std::string::npos &&
-            line.find(sourceSize) != std::string::npos && line.find(sourceTime) != std::string::npos && fileSize > 84;
+        pfc::string8 sacdVersion;
+        sacd_plugin_installed(&sacdVersion);
+        return jsonNumberFieldEquals(line, "cacheVersion", static_cast<uint64_t>(kCacheFormatVersion)) &&
+            jsonNumberFieldEquals(line, "subsong", static_cast<uint64_t>(item.subsong)) &&
+            jsonNumberFieldEquals(line, "sourceSize", static_cast<uint64_t>(item.sourceSize)) &&
+            jsonNumberFieldEquals(line, "sourceWriteTime", static_cast<int64_t>(item.sourceWriteTime)) &&
+            line.find("\"decoderVersion\":\"" + std::string(sacdVersion.c_str()) + "\"") != std::string::npos && fileSize > 84;
     };
 
     if (cacheValid()) {
@@ -1549,9 +1874,11 @@ void SacdDlnaServer::prefetchNextTrack(uint32_t itemId) {
     const bool needsCache = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) || _stricmp(next.sourceExt.c_str(), ".iso") == 0;
     if (!needsCache) {
         std::lock_guard<std::mutex> g(m_prefetchMutex);
-        m_prefetchTitle = next.track.title;
-        m_prefetchState = "NATIVE DSD / NO CACHE NEEDED";
-        m_prefetchActive = false;
+        if (m_prefetchActiveCount == 0) {
+            m_prefetchTitle = next.track.title;
+            m_prefetchState = "NATIVE DSD / NO CACHE NEEDED";
+            m_prefetchActive = false;
+        }
         return;
     }
     const std::string key = (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) ? "dsp-" : "native-") + cacheKeyFor(next.sourcePath, next.subsong);
@@ -1560,29 +1887,53 @@ void SacdDlnaServer::prefetchNextTrack(uint32_t itemId) {
         if (!m_prefetchKeys.insert(key).second) return;
         m_prefetchTitle = next.track.title;
         m_prefetchState = "PREPARING NEXT TRACK";
+        ++m_prefetchActiveCount;
         m_prefetchActive = true;
+        // Reap prefetch threads that already finished (same reason as the client threads).
+        for (const auto& id : m_finishedPrefetchThreads) {
+            const auto it = std::find_if(m_prefetchThreads.begin(), m_prefetchThreads.end(), [&](const std::thread& t) { return t.get_id() == id; });
+            if (it == m_prefetchThreads.end()) continue;
+            if (it->joinable()) it->join();
+            m_prefetchThreads.erase(it);
+        }
+        m_finishedPrefetchThreads.clear();
         auto aborter = std::make_shared<abort_callback_impl>();
         m_prefetchAborters.push_back(aborter);
-        m_prefetchThreads.emplace_back([this, next, aborter, key] {
-            bool ok = false;
-            try {
-                std::wstring path; DsdTrack track = next.track;
-                if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled)) ok = ensureProcessedDsf(next, path, track, *aborter, false);
-                else if (_stricmp(next.sourceExt.c_str(), ".iso") == 0) ok = ensureCached(next, path, track, *aborter, false);
-                else ok = true;
-                networkLog(std::string("next-track prefetch ") + (ok ? "ready: " : "failed: ") + next.track.title);
-            } catch (const std::exception& e) {
-                networkLog(std::string("next-track prefetch aborted/failed: ") + next.track.title + " / " + e.what());
-            } catch (...) {
-                networkLog(std::string("next-track prefetch failed: ") + next.track.title);
-            }
-            {
-                std::lock_guard<std::mutex> g(m_prefetchMutex);
-                m_prefetchKeys.erase(key);
-                m_prefetchActive = false;
-                m_prefetchState = ok ? "READY" : "NOT READY";
-            }
-        });
+        try {
+            m_prefetchThreads.emplace_back([this, next, aborter, key] {
+                bool ok = false;
+                try {
+                    std::wstring path; DsdTrack track = next.track;
+                    if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled)) ok = ensureProcessedDsf(next, path, track, *aborter, false);
+                    else if (_stricmp(next.sourceExt.c_str(), ".iso") == 0) ok = ensureCached(next, path, track, *aborter, false);
+                    else ok = true;
+                    networkLog(std::string("next-track prefetch ") + (ok ? "ready: " : "failed: ") + next.track.title);
+                } catch (const std::exception& e) {
+                    networkLog(std::string("next-track prefetch aborted/failed: ") + next.track.title + " / " + e.what());
+                } catch (...) {
+                    networkLog(std::string("next-track prefetch failed: ") + next.track.title);
+                }
+                {
+                    std::lock_guard<std::mutex> g(m_prefetchMutex);
+                    m_prefetchKeys.erase(key);
+                    if (m_prefetchActiveCount) --m_prefetchActiveCount;
+                    m_prefetchActive = m_prefetchActiveCount != 0;
+                    auto it = std::find(m_prefetchAborters.begin(), m_prefetchAborters.end(), aborter);
+                    if (it != m_prefetchAborters.end()) m_prefetchAborters.erase(it);
+                    m_prefetchState = m_prefetchActive ? (ok ? "READY / OTHER PREFETCH ACTIVE" : "NOT READY / OTHER PREFETCH ACTIVE")
+                                                       : (ok ? "READY" : "NOT READY");
+                    m_finishedPrefetchThreads.push_back(std::this_thread::get_id());   // last locked step: safe to join
+                }
+            });
+        } catch (...) {
+            m_prefetchKeys.erase(key);
+            if (m_prefetchActiveCount) --m_prefetchActiveCount;
+            m_prefetchActive = m_prefetchActiveCount != 0;
+            auto it = std::find(m_prefetchAborters.begin(), m_prefetchAborters.end(), aborter);
+            if (it != m_prefetchAborters.end()) m_prefetchAborters.erase(it);
+            m_prefetchState = "PREFETCH WORKER UNAVAILABLE";
+            throw;
+        }
     }
 }
 
@@ -1596,6 +1947,17 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
         for (const auto& x : m_items) if (x.id == itemId) { item = x; found = true; break; }
     }
     if (!found || !item.handle.is_valid()) return false;
+
+    const bool isHead = requestLine.rfind("HEAD ", 0) == 0;
+    if (!isHead) {
+        std::lock_guard<std::mutex> g(m_rateMutex);
+        if (m_activeStreams >= kMaxConcurrentStreams) {
+            const std::string hdr503 = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            sendAll(s, hdr503.data(), hdr503.size(), &aborter);
+            networkLog("stream rejected: maximum concurrent streams reached");
+            return true;
+        }
+    }
 
     std::wstring path;
     std::string ext;
@@ -1619,7 +1981,9 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
         if (!ensureCached(item, path, track, aborter)) return false;
         ext = ".dsf";
     } else {
-        path = utf8ToWide(item.sourcePath.c_str());
+        // item.sourcePath is a foobar2000 path ("file://..."): convert before touching the disk.
+        path = nativePathFromFb2k(item.sourcePath.c_str());
+        if (path.empty()) return false;   // not a plain local file
         ext = item.sourceExt;
     }
 
@@ -1660,21 +2024,11 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
         : 4 * 1024 * 1024;
     setsockopt(s, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&sndbuf), sizeof(sndbuf));
 
-    {
-        std::lock_guard<std::mutex> g(m_rateMutex);
-        if (m_activeStreams >= kMaxConcurrentStreams) {
-            const std::string hdr503 = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-            sendAll(s, hdr503.data(), hdr503.size(), &aborter);
-            networkLog("stream rejected: maximum concurrent streams reached");
-            return true;
-        }
-    }
     std::string sourceFormat = item.sourceExt.empty() ? "UNKNOWN" : item.sourceExt.substr(1);
     std::transform(sourceFormat.begin(), sourceFormat.end(), sourceFormat.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     std::string outputFormat = ext.empty() ? "UNKNOWN" : ext.substr(1);
     std::transform(outputFormat.begin(), outputFormat.end(), outputFormat.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     const bool dspEnabled = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled);
-    const bool needsGeneratedOutput = dspEnabled || _stricmp(item.sourceExt.c_str(), ".iso") == 0;
     const std::string pipeline = dspEnabled
         ? "PCM/DSD source -> DSD Processor -> DSF/DSD -> DLNA"
         : (_stricmp(item.sourceExt.c_str(), ".iso") == 0
@@ -1686,21 +2040,21 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
     const uint64_t outputSize = fileSizeSafe(path);
     updateStreamStart(peerIp, track, sourceFormat, outputFormat, pipeline, conversion, item.sourceSize, outputSize,
                       item.sourceSampleRate, item.sourceChannels, item.sourceBitsPerSample);
-    prefetchNextTrack(itemId);
-    {
-        std::lock_guard<std::mutex> g(m_rateMutex);
-        if (sacd_dlna_cfg::stability_mode && track.dsdRate) {
+    bool ok = false;
+    try {
+        prefetchNextTrack(itemId);
+        {
+            std::lock_guard<std::mutex> g(m_rateMutex);
+            if (sacd_dlna_cfg::stability_mode && track.dsdRate) {
             const uint32_t prebufferSeconds = std::clamp<uint32_t>(sacd_dlna_cfg::prebuffer_seconds.get(), 5, 60);
             const uint64_t requestedBytes = static_cast<uint64_t>(track.dsdRate) / 4ULL * prebufferSeconds;
             m_prebufferTargetBytes = length < requestedBytes ? length : requestedBytes;
             m_prebufferBytes = m_prebufferTargetBytes < 256ull * 1024ull * 1024ull ? m_prebufferTargetBytes : 256ull * 1024ull * 1024ull;
-        } else {
-            m_prebufferTargetBytes = m_prebufferBytes = 0;
+            } else {
+                m_prebufferTargetBytes = m_prebufferBytes = 0;
+            }
         }
-    }
 
-    bool ok = false;
-    try {
         char buf[128 * 1024];
         uint64_t remaining = length;
         while (remaining) {
@@ -1724,9 +2078,15 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
         networkLog("stream aborted for " + peerIp + " / " + track.title);
     } catch (std::exception const& e) {
         setLastError(std::string("stream failed: ") + e.what());
+    } catch (...) {
+        setLastError("stream failed with an unknown exception");
     }
     updateStreamEnd();
-    return ok;
+    // The response headers are already on the wire, so this request is finished whatever
+    // happened: returning false would make handleClient append a "404 Not Found" to a
+    // half-sent audio stream.
+    if (!ok) networkLog("stream ended early for " + peerIp + " / " + track.title);
+    return true;
 }
 
 bool SacdDlnaServer::serveAlbumArt(SOCKET s, uint32_t albumId, const std::string& requestLine, abort_callback_impl& aborter) {
@@ -1753,13 +2113,12 @@ bool SacdDlnaServer::serveAlbumArt(SOCKET s, uint32_t albumId, const std::string
     }
     if (!handle.is_valid()) return false;
 
+    // File size/timestamp come from the metadb cache: no disk access for a cache key.
     uint64_t sourceSize = 0; int64_t sourceTime = 0;
     {
-        std::error_code ec; const std::wstring ws = utf8ToWide(handle->get_path());
-        const fs::path filePath(ws);
-        const auto sz = fs::file_size(filePath, ec);
-        sourceSize = ec ? 0 : static_cast<uint64_t>(sz);
-        std::error_code ec2; const auto wt = fs::last_write_time(filePath, ec2); sourceTime = ec2 ? 0 : static_cast<int64_t>(wt.time_since_epoch().count());
+        const foobar2000_io::t_filestats stats = handle->get_filestats();
+        sourceSize = stats.m_size != foobar2000_io::filesize_invalid ? static_cast<uint64_t>(stats.m_size) : 0;
+        sourceTime = static_cast<int64_t>(stats.m_timestamp);
     }
     const std::string keyMaterial = std::string(handle->get_path()) + "#" + std::to_string(sourceSize) + "#" + std::to_string(sourceTime) + "#art";
     char keyHex[32]{}; snprintf(keyHex, sizeof(keyHex), "%016llX", static_cast<unsigned long long>(fnv1a64(keyMaterial)));
@@ -1807,6 +2166,7 @@ void SacdDlnaServer::clientThread(SOCKET s, std::shared_ptr<abort_callback_impl>
 void SacdDlnaServer::closeClientState(SOCKET s) {
     std::lock_guard<std::mutex> g(m_clientMutex);
     m_clients.erase(std::remove_if(m_clients.begin(), m_clients.end(), [s](const ClientState& c) { return c.socket == s; }), m_clients.end());
+    m_finishedClientThreads.push_back(std::this_thread::get_id());   // last thing clientThread() does: safe to join
 }
 
 void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
@@ -1823,7 +2183,8 @@ void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
     {
         std::lock_guard<std::mutex> g(m_diagMutex);
         ++m_httpRequests;
-        if (!peerIp.empty() && peerIp != m_localIp && peerIp != "127.0.0.1") {
+        const std::string localIp = m_localIp;
+        if (!peerIp.empty() && peerIp != localIp && peerIp != "127.0.0.1") {
             m_networkPresence = true;
             m_remoteHttpSeen = true;
             ++m_remoteHttpRequests;
@@ -1874,6 +2235,7 @@ void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
         body += "<p>Music Library: " + std::string(st.sharingLibrary ? "SHARING" : "NOT SHARING") + " (" + std::to_string(st.sharedCount) + " DSD tracks)</p>";
         body += "<p>Cache: " + std::to_string(st.cacheHits) + " hits / " + std::to_string(st.cacheMisses) + " misses / " + std::to_string(st.cacheBytes / 1048576.0) + " MB</p>";
         body += "<p>HTTP ready: <b>" + std::string(st.httpReady ? "YES" : "NO") + "</b> | SSDP ready: <b>" + std::string(st.ssdpReady ? "YES" : "NO") + "</b></p>";
+        body += "<p>Advertised LOCATION: <code>http://" + xmlEscape(st.localIp.c_str()) + ":" + std::to_string(m_port) + "/device.xml</code></p>";
         body += "<p>Network visibility: <b>" + xmlEscape(st.networkVisibility.c_str()) + "</b> | remote HTTP=" + std::to_string(st.remoteHttpRequests) + " | remote SSDP M-SEARCH=" + std::to_string(st.remoteSsdpSearches) + " | last remote peer=" + xmlEscape(st.lastRemotePeer.c_str()) + "</p>";
         body += "<p>Network self-test: HTTP=" + std::string(st.httpSelfTestOk ? "OK" : "-") + " | SSDP=" + std::string(st.ssdpProbeOk ? "OK" : "-") + " | NOTIFY loopback=" + std::string(st.ssdpNotifyLoopbackOk ? "OK" : "-") + "</p>";
         body += "<p>SSDP counters: NOTIFY=" + std::to_string(st.ssdpAliveSent) + " M-SEARCH-rx=" + std::to_string(st.ssdpMSearchReceived) + " responses=" + std::to_string(st.ssdpResponsesSent) + " renderer-responses=" + std::to_string(st.ssdpDiscoverResponses) + "</p>";
@@ -1888,8 +2250,31 @@ void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
         const size_t bodyStart = req.find("\r\n\r\n");
         const std::string soap = bodyStart == std::string::npos ? std::string{} : req.substr(bodyStart + 4);
         const auto action = headerValueCI(req, "SOAPACTION");
-        if (lowerCopy(action).find("getsystemupdateid") != std::string::npos || lowerCopy(soap).find("<u:getsystemupdateid") != std::string::npos) {
+        const std::string actionName = lowerCopy(soapActionName(action, soap));
+        const auto soapReply = [&](const std::string& actionResponse) {
+            return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+                "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">"
+                "<s:Body>" + actionResponse + "</s:Body></s:Envelope>";
+        };
+        if (actionName == "getsystemupdateid") {
             sendXml(systemUpdateIdResponse()); return;
+        }
+        // Mandatory ContentDirectory:1 actions. Before, every request that was not GetSystemUpdateID was
+        // answered as a Browse, so control points asking for these got a BrowseResponse and many gave up.
+        if (actionName == "getsearchcapabilities") {   // no Search action: empty capability list
+            sendXml(soapReply("<u:GetSearchCapabilitiesResponse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\"><SearchCaps></SearchCaps></u:GetSearchCapabilitiesResponse>")); return;
+        }
+        if (actionName == "getsortcapabilities") {     // SortCriteria is ignored: empty capability list
+            sendXml(soapReply("<u:GetSortCapabilitiesResponse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\"><SortCaps></SortCaps></u:GetSortCapabilitiesResponse>")); return;
+        }
+        if (!actionName.empty() && actionName != "browse") {   // anything else (Search, CreateObject...): UPnP error 401
+            const std::string fault = soapReply("<s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>"
+                "<UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>401</errorCode><errorDescription>Invalid Action</errorDescription></UPnPError>"
+                "</detail></s:Fault>");
+            const std::string faultHeader = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/xml; charset=\"utf-8\"\r\nContent-Length: " + std::to_string(fault.size()) + "\r\nConnection: close\r\n\r\n";
+            sendAll(s, faultHeader.data(), faultHeader.size(), &aborter); sendAll(s, fault.data(), fault.size(), &aborter);
+            networkLog("ContentDirectory: unsupported action " + actionName);
+            return;
         }
         const std::string objectId = urlPathDecode(extractSoapArg(soap, "ObjectID", kRootObject));
         const std::string browseFlag = extractSoapArg(soap, "BrowseFlag", "BrowseDirectChildren");
@@ -1933,7 +2318,12 @@ void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
 
 void SacdDlnaServer::httpLoop() {
     m_httpListen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (m_httpListen == INVALID_SOCKET) { m_running = false; return; }
+    if (m_httpListen == INVALID_SOCKET) {
+        const int err = WSAGetLastError();
+        m_running = false;
+        { std::lock_guard<std::mutex> g(m_diagMutex); m_httpReady = false; m_networkDiagnostic = "HTTP socket creation failed: " + std::to_string(err); }
+        return;
+    }
     BOOL reuse = TRUE; setsockopt(m_httpListen, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
     sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_addr.s_addr = htonl(INADDR_ANY); addr.sin_port = htons(m_port);
     if (bind(m_httpListen, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR || listen(m_httpListen, 16) == SOCKET_ERROR) {
@@ -1948,12 +2338,35 @@ void SacdDlnaServer::httpLoop() {
         const SOCKET clientSocket = accept(m_httpListen, reinterpret_cast<sockaddr*>(&client), &len);
         if (clientSocket == INVALID_SOCKET) { if (m_running) continue; break; }
         auto aborter = std::make_shared<abort_callback_impl>();
+        bool launched = false;
         {
             std::lock_guard<std::mutex> g(m_clientMutex);
+            // Reap client threads that already finished. Every HTTP request runs on its own
+            // thread; without this the std::thread objects (and their OS handles) piled up
+            // until the server was stopped.
+            for (const auto& id : m_finishedClientThreads) {
+                const auto it = std::find_if(m_clientThreads.begin(), m_clientThreads.end(), [&](const std::thread& t) { return t.get_id() == id; });
+                if (it == m_clientThreads.end()) continue;
+                if (it->joinable()) it->join();
+                m_clientThreads.erase(it);
+            }
+            m_finishedClientThreads.clear();
             m_clients.push_back({ clientSocket, aborter });
-            m_clientThreads.emplace_back([this, clientSocket, aborter] { clientThread(clientSocket, aborter); });
+            try {
+                m_clientThreads.emplace_back([this, clientSocket, aborter] { clientThread(clientSocket, aborter); });
+                launched = true;
+            } catch (...) {
+                m_clients.pop_back();
+            }
+        }
+        if (!launched) {
+            aborter->set();
+            shutdown(clientSocket, SD_BOTH);
+            closesocket(clientSocket);
+            networkLog("unable to launch HTTP client worker thread");
         }
     }
+    { std::lock_guard<std::mutex> g(m_diagMutex); m_httpReady = false; }
 }
 
 void SacdDlnaServer::ssdpLoop() {
@@ -2005,19 +2418,23 @@ void SacdDlnaServer::ssdpLoop() {
         return rc == static_cast<int>(msg.size());
     };
     auto notifyAlive = [&]() {
-        const char* nts[] = { "upnp:rootdevice", kUuid, "urn:schemas-upnp-org:device:MediaServer:1" };
-        const char* usns[] = { uuidUsn.c_str(), kUuid, deviceUsn.c_str() };
-        for (int i = 0; i < 3; ++i) {
+        const std::string contentUsn = std::string(kUuid) + "::urn:schemas-upnp-org:service:ContentDirectory:1";
+        const std::string connectionUsn = std::string(kUuid) + "::urn:schemas-upnp-org:service:ConnectionManager:1";
+        const char* nts[] = { "upnp:rootdevice", kUuid, "urn:schemas-upnp-org:device:MediaServer:1", "urn:schemas-upnp-org:service:ContentDirectory:1", "urn:schemas-upnp-org:service:ConnectionManager:1" };
+        const char* usns[] = { uuidUsn.c_str(), kUuid, deviceUsn.c_str(), contentUsn.c_str(), connectionUsn.c_str() };
+        for (int i = 0; i < 5; ++i) {
             const std::string msg = "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nCACHE-CONTROL: max-age=1800\r\nLOCATION: " + location +
-                "\r\nNT: " + nts[i] + "\r\nNTS: ssdp:alive\r\nSERVER: Windows/10 UPnP/1.1 foo_sacd_dlna/0.8-alpha3-j\r\nUSN: " + usns[i] + "\r\n\r\n";
+                "\r\nNT: " + nts[i] + "\r\nNTS: ssdp:alive\r\nSERVER: Windows/10 UPnP/1.1 foo_sacd_dlna/" + std::string(kVersion) + "\r\nUSN: " + usns[i] + "\r\n\r\n";
             if (sendMulticast(msg)) { std::lock_guard<std::mutex> g(m_diagMutex); ++m_ssdpAliveSent; }
         }
         networkLog("SSDP NOTIFY ssdp:alive sent to 239.255.255.250:1900");
     };
     auto notifyByeBye = [&]() {
-        const char* nts[] = { "upnp:rootdevice", kUuid, "urn:schemas-upnp-org:device:MediaServer:1" };
-        const char* usns[] = { uuidUsn.c_str(), kUuid, deviceUsn.c_str() };
-        for (int i = 0; i < 3; ++i) {
+        const std::string contentUsn = std::string(kUuid) + "::urn:schemas-upnp-org:service:ContentDirectory:1";
+        const std::string connectionUsn = std::string(kUuid) + "::urn:schemas-upnp-org:service:ConnectionManager:1";
+        const char* nts[] = { "upnp:rootdevice", kUuid, "urn:schemas-upnp-org:device:MediaServer:1", "urn:schemas-upnp-org:service:ContentDirectory:1", "urn:schemas-upnp-org:service:ConnectionManager:1" };
+        const char* usns[] = { uuidUsn.c_str(), kUuid, deviceUsn.c_str(), contentUsn.c_str(), connectionUsn.c_str() };
+        for (int i = 0; i < 5; ++i) {
             const std::string msg = "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nNT: " + std::string(nts[i]) +
                 "\r\nNTS: ssdp:byebye\r\nUSN: " + std::string(usns[i]) + "\r\n\r\n";
             sendMulticast(msg);
@@ -2057,7 +2474,10 @@ void SacdDlnaServer::ssdpLoop() {
         }
         std::string st = trimCopy(headerValueCI(msg, "ST"));
         if (st.empty()) st = "ssdp:all";
-        if (st != "ssdp:all" && st != "upnp:rootdevice" && st != kUuid && st != "urn:schemas-upnp-org:device:MediaServer:1") continue;
+        if (st != "ssdp:all" && st != "upnp:rootdevice" && st != kUuid &&
+            st != "urn:schemas-upnp-org:device:MediaServer:1" &&
+            st != "urn:schemas-upnp-org:service:ContentDirectory:1" &&
+            st != "urn:schemas-upnp-org:service:ConnectionManager:1") continue;
         if (externalPeer) {
             std::lock_guard<std::mutex> g(m_diagMutex);
             m_networkPresence = true;
@@ -2067,9 +2487,14 @@ void SacdDlnaServer::ssdpLoop() {
             m_ssdpLastPeer = peerIp;
             m_networkVisibility = "CONFIRMED / REMOTE SSDP M-SEARCH";
         }
-        const std::string usn = (st == "upnp:rootdevice") ? uuidUsn : (st == kUuid ? std::string(kUuid) : deviceUsn);
+        const std::string contentUsn = std::string(kUuid) + "::urn:schemas-upnp-org:service:ContentDirectory:1";
+        const std::string connectionUsn = std::string(kUuid) + "::urn:schemas-upnp-org:service:ConnectionManager:1";
+        const std::string usn = (st == "upnp:rootdevice") ? uuidUsn :
+            (st == kUuid ? std::string(kUuid) :
+            (st == "urn:schemas-upnp-org:service:ContentDirectory:1" ? contentUsn :
+            (st == "urn:schemas-upnp-org:service:ConnectionManager:1" ? connectionUsn : deviceUsn)));
         const std::string response = "HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nEXT:\r\nLOCATION: " + location +
-            "\r\nSERVER: Windows/10 UPnP/1.1 foo_sacd_dlna/0.8-alpha3-j\r\nST: " + st + "\r\nUSN: " + usn + "\r\n\r\n";
+            "\r\nSERVER: Windows/10 UPnP/1.1 foo_sacd_dlna/" + std::string(kVersion) + "\r\nST: " + st + "\r\nUSN: " + usn + "\r\n\r\n";
         const int rc = sendto(s, response.data(), static_cast<int>(response.size()), 0, reinterpret_cast<sockaddr*>(&from), fromLen);
         if (rc == static_cast<int>(response.size())) { std::lock_guard<std::mutex> g(m_diagMutex); ++m_ssdpResponsesSent; }
     }
@@ -2184,18 +2609,33 @@ void SacdDlnaServer::clear_persistent_cache() {
             fs::remove(entry.path(), ec);
         }
     }
-    std::lock_guard<std::mutex> g(m_artMutex);
-    m_artCache.clear();
+    {
+        std::lock_guard<std::mutex> g(m_artMutex);
+        m_artCache.clear();
+    }
+    {
+        std::lock_guard<std::mutex> g(m_cacheStatsMutex);
+        m_cachedCacheBytes = 0;
+        m_cacheStatsTick = std::chrono::steady_clock::now();
+    }
 }
 
 void SacdDlnaServer::clear_shared_library() {
     std::lock_guard<std::mutex> g(m_mutex);
-    m_items.clear(); m_artists.clear(); m_albums.clear(); m_sharedCount = 0; m_sharingLibrary = false; ++m_updateId;
+    m_items.clear(); m_artists.clear(); m_albums.clear(); m_genres.clear(); m_folders.clear();
+    m_albumsByTitle.clear(); m_allTrackIds.clear(); m_folderRootId = 0;
+    m_itemIndex.clear(); m_artistIndex.clear(); m_albumIndex.clear(); m_genreIndex.clear(); m_folderIndex.clear();
+    m_sharedCount = 0; m_sharingLibrary = false; ++m_updateId;
     { std::lock_guard<std::mutex> a(m_artMutex); m_artCache.clear(); }
 }
 
 void SacdDlnaServer::publish(const metadb_handle_list& items) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool dspEnabled = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled);
+    const bool dspInstalled = !dspEnabled || DsdProcessorBridge::installed();   // evaluated once, not per track
+
     std::vector<Item> newItems; newItems.reserve(items.get_count());
+    std::vector<libindex::Track> indexTracks; indexTracks.reserve(items.get_count());   // parallel to newItems
     for (size_t i = 0; i < items.get_count(); ++i) {
         const auto& handle = items[i]; const char* path = handle->get_path(); if (!path || !*path) continue;
         const char* ext = strrchr(path, '.'); if (!ext) continue;
@@ -2203,25 +2643,48 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
         const bool isPcm = !_stricmp(ext, ".flac") || !_stricmp(ext, ".wav") || !_stricmp(ext, ".aif") || !_stricmp(ext, ".aiff") ||
             !_stricmp(ext, ".wv") || !_stricmp(ext, ".tta") || !_stricmp(ext, ".ape") || !_stricmp(ext, ".mp3") ||
             !_stricmp(ext, ".m4a") || !_stricmp(ext, ".mp4") || !_stricmp(ext, ".ogg") || !_stricmp(ext, ".opus") || !_stricmp(ext, ".aac");
-        if (!isDsd && !(static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) && isPcm)) continue;
-        if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) && !DsdProcessorBridge::installed()) continue;
-        Item x; x.id = m_nextId++; x.sourcePath = path; x.sourceExt = ext; x.subsong = handle->get_subsong_index(); x.handle = handle;
-        {
-            std::error_code ec; const std::wstring ws = utf8ToWide(path);
-            const fs::path filePath(ws);
-            const auto sz = fs::file_size(filePath, ec);
-            x.sourceSize = ec ? 0 : static_cast<uint64_t>(sz);
+        if (!isDsd && !(dspEnabled && isPcm)) continue;
+        if (!dspInstalled) continue;
+        Item x; x.id = m_nextId++; x.sourcePath = path; x.sourceExt = lowerCopy(ext); x.subsong = handle->get_subsong_index(); x.handle = handle;
+
+        // File size and timestamp come from foobar2000's metadb cache, so indexing a
+        // library does not stat thousands of files (this runs on the main thread).
+        const foobar2000_io::t_filestats stats = handle->get_filestats();
+        x.sourceSize = stats.m_size != foobar2000_io::filesize_invalid ? static_cast<uint64_t>(stats.m_size) : 0;
+        x.sourceWriteTime = static_cast<int64_t>(stats.m_timestamp);
+        pfc::string8 nativeUtf8;
+        const bool isLocalFile = foobar2000_io::extract_native_path(path, nativeUtf8);
+        const std::wstring nativePath = isLocalFile ? utf8ToWide(nativeUtf8.c_str()) : std::wstring();
+        if ((x.sourceSize == 0 || x.sourceWriteTime == 0) && !nativePath.empty()) {   // stats not known yet: one direct stat
+            std::error_code ec; const fs::path filePath(nativePath);
+            const auto sz = fs::file_size(filePath, ec); if (!ec) x.sourceSize = static_cast<uint64_t>(sz);
             std::error_code ec2; const auto wt = fs::last_write_time(filePath, ec2);
-            x.sourceWriteTime = ec2 ? 0 : static_cast<int64_t>(wt.time_since_epoch().count());
+            if (!ec2) x.sourceWriteTime = static_cast<int64_t>(wt.time_since_epoch().count());
         }
+
         try {
-            abort_callback_dummy abort; service_ptr_t<input_info_reader> infoReader; input_entry::g_open_for_info_read(infoReader, nullptr, path, abort); file_info_impl info; infoReader->get_info(x.subsong, info, abort);
+            // Tags and technical info also come from the metadb cache. Only when a track
+            // is not in the metadb yet is the file opened (previously EVERY track was
+            // opened, which froze the UI for large or network libraries).
+            file_info_impl fallbackInfo;
+            const file_info* infoPtr = nullptr;
+            metadb_info_container::ptr infoRef;
+            if (handle->get_info_ref(infoRef) && infoRef.is_valid()) {
+                infoPtr = &infoRef->info();
+            } else {
+                abort_callback_dummy abort; service_ptr_t<input_info_reader> infoReader;
+                input_entry::g_open_for_info_read(infoReader, nullptr, path, abort);
+                infoReader->get_info(x.subsong, fallbackInfo, abort);
+                infoPtr = &fallbackInfo;
+            }
+            const file_info& info = *infoPtr;
             auto meta = [&](const char* key) { const char* v = info.meta_get(key, 0); return v ? std::string(v) : std::string{}; };
             auto metaFirst = [&](std::initializer_list<const char*> names) { for (auto n : names) { auto v = meta(n); if (!v.empty()) return v; } return std::string{}; };
             x.track.title = meta("title"); x.track.artist = meta("artist"); x.track.album = meta("album"); x.track.albumArtist = metaFirst({"album artist", "albumartist"});
             x.track.genre = meta("genre"); x.track.date = metaFirst({"date", "year"}); x.track.composer = meta("composer"); x.track.publisher = metaFirst({"publisher", "label"}); x.track.comment = metaFirst({"comment", "comments"}); x.track.trackNumber = metaFirst({"tracknumber", "track number", "track"}); x.track.discNumber = metaFirst({"discnumber", "disc number", "disc"}); x.track.totalTracks = metaFirst({"totaltracks", "total tracks", "tracktotal"}); x.track.totalDiscs = metaFirst({"totaldiscs", "total discs"});
             if (x.track.title.empty()) x.track.title = "Track " + std::to_string(x.subsong + 1);
-            if (x.track.artist.empty()) x.track.artist = "Unknown Artist"; if (x.track.album.empty()) x.track.album = "Unknown Album";
+            if (x.track.artist.empty()) x.track.artist = "Unknown Artist";
+            if (x.track.album.empty()) x.track.album = "Unknown Album";
             x.track.duration = info.get_length();
             x.sourceSampleRate = static_cast<uint32_t>(std::max<t_int64>(0, info.info_get_int("samplerate")));
             x.sourceChannels = static_cast<uint32_t>(std::max<t_int64>(1, info.info_get_int("channels")));
@@ -2230,63 +2693,41 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
             x.track.channels = x.sourceChannels;
             x.track.bitsPerSample = x.sourceBitsPerSample ? x.sourceBitsPerSample : 1;
             if (x.track.dsdRate != 2822400 && x.track.dsdRate != 5644800 && x.track.dsdRate != 11289600) x.track.dsdRate = 0;
-            if (x.sourceExt == ".dsf" || x.sourceExt == ".dff") {
-                std::error_code ec; const std::wstring ws = utf8ToWide(x.sourcePath.c_str()); const fs::path filePath(ws); x.track.fileSize = fs::file_size(filePath, ec);
-            }
-            x.track.path = x.sourceExt == ".iso" ? std::wstring{} : utf8ToWide(x.sourcePath.c_str());
+            if (x.sourceExt == ".dsf" || x.sourceExt == ".dff") x.track.fileSize = x.sourceSize;
+            x.track.path = x.sourceExt == ".iso" ? std::wstring{} : nativePath;
+            libindex::Track it;
+            it.id = x.id; it.title = x.track.title; it.artist = x.track.artist; it.albumArtist = x.track.albumArtist;
+            it.album = x.track.album; it.genre = x.track.genre; it.trackNumber = x.track.trackNumber; it.discNumber = x.track.discNumber;
+            if (isLocalFile) it.nativePath = nativeUtf8.c_str();
             newItems.push_back(std::move(x));
+            indexTracks.push_back(std::move(it));
         } catch (std::exception const& e) { setLastError(std::string("unable to index ") + path + ": " + e.what()); }
     }
 
-    std::vector<Artist> newArtists; std::vector<Album> newAlbums;
-    auto findArtist = [&](const std::string& key) -> Artist* { for (auto& x : newArtists) if (x.key == key) return &x; return nullptr; };
-    auto findAlbum = [&](uint32_t artistId, const std::string& key) -> Album* { for (auto& x : newAlbums) if (x.artistId == artistId && x.key == key) return &x; return nullptr; };
-    for (auto& item : newItems) {
-        const std::string artistKey = normalizeKey(item.track.artist); Artist* artist = findArtist(artistKey);
-        if (!artist) { Artist a; a.id = m_nextArtistId++; a.name = item.track.artist; a.key = artistKey; newArtists.push_back(std::move(a)); artist = &newArtists.back(); }
-        item.artistId = artist->id;
-        const std::string albumKey = normalizeKey(item.track.album); Album* album = findAlbum(artist->id, albumKey);
-        if (!album) { Album a; a.id = m_nextAlbumId++; a.artistId = artist->id; a.title = item.track.album; a.key = albumKey; a.representativeItemId = item.id; newAlbums.push_back(std::move(a)); album = &newAlbums.back(); artist->albumIds.push_back(album->id); }
-        item.albumId = album->id; album->itemIds.push_back(item.id);
-    }
-
-    auto ciLess = [](const std::string& a, const std::string& b) { return _stricmp(a.c_str(), b.c_str()) < 0; };
-    auto numberPrefix = [](const std::string& s) -> unsigned {
-        const char* p = s.c_str();
-        while (*p && isspace(static_cast<unsigned char>(*p))) ++p;
-        if (!*p || !isdigit(static_cast<unsigned char>(*p))) return UINT_MAX;
-        return static_cast<unsigned>(strtoul(p, nullptr, 10));
-    };
-    std::sort(newArtists.begin(), newArtists.end(), [&](const Artist& a, const Artist& b) { return ciLess(a.name, b.name); });
-    std::sort(newAlbums.begin(), newAlbums.end(), [&](const Album& a, const Album& b) {
-        const auto aa = std::find_if(newArtists.begin(), newArtists.end(), [&](const Artist& x) { return x.id == a.artistId; });
-        const auto bb = std::find_if(newArtists.begin(), newArtists.end(), [&](const Artist& x) { return x.id == b.artistId; });
-        const std::string an = aa != newArtists.end() ? aa->name : std::string{}, bn = bb != newArtists.end() ? bb->name : std::string{};
-        if (_stricmp(an.c_str(), bn.c_str()) != 0) return ciLess(an, bn); return ciLess(a.title, b.title);
-    });
-    for (auto& album : newAlbums) std::sort(album.itemIds.begin(), album.itemIds.end(), [&](uint32_t a, uint32_t b) {
-        const auto ia = std::find_if(newItems.begin(), newItems.end(), [&](const Item& x) { return x.id == a; });
-        const auto ib = std::find_if(newItems.begin(), newItems.end(), [&](const Item& x) { return x.id == b; });
-        if (ia == newItems.end() || ib == newItems.end()) return a < b;
-        const unsigned da = numberPrefix(ia->track.discNumber), db = numberPrefix(ib->track.discNumber);
-        if (da != db) return da < db;
-        const unsigned ta = numberPrefix(ia->track.trackNumber), tb = numberPrefix(ib->track.trackNumber);
-        if (ta != tb) return ta < tb;
-        if (_stricmp(ia->track.title.c_str(), ib->track.title.c_str()) != 0) return ciLess(ia->track.title, ib->track.title);
-        return ia->id < ib->id;
-    });
-    for (auto& artist : newArtists) std::sort(artist.albumIds.begin(), artist.albumIds.end(), [&](uint32_t a, uint32_t b) {
-        const auto aa = std::find_if(newAlbums.begin(), newAlbums.end(), [&](const Album& x) { return x.id == a; });
-        const auto bb = std::find_if(newAlbums.begin(), newAlbums.end(), [&](const Album& x) { return x.id == b; });
-        return (aa == newAlbums.end() || bb == newAlbums.end()) ? a < b : ciLess(aa->title, bb->title);
-    });
+    // Artists, Albums, Genres, Folders and All Tracks (grouping, sorting and ids live in library_index.h,
+    // which has its own unit test under tests/library_index_selftest).
+    libindex::NextIds nextIds;
+    nextIds.artist = m_nextArtistId; nextIds.album = m_nextAlbumId; nextIds.genre = m_nextGenreId; nextIds.folder = m_nextFolderId;
+    libindex::Index index = libindex::build(indexTracks, nextIds);
+    m_nextArtistId = nextIds.artist; m_nextAlbumId = nextIds.album; m_nextGenreId = nextIds.genre; m_nextFolderId = nextIds.folder;
+    for (size_t i = 0; i < newItems.size(); ++i) { newItems[i].artistId = index.trackArtistId[i]; newItems[i].albumId = index.trackAlbumId[i]; }
 
     {
         std::lock_guard<std::mutex> g(m_mutex);
-        m_items = std::move(newItems); m_artists = std::move(newArtists); m_albums = std::move(newAlbums); m_sharedCount = m_items.size(); ++m_updateId;
+        m_items = std::move(newItems);
+        m_artists = std::move(index.artists); m_albums = std::move(index.albums);
+        m_genres = std::move(index.genres); m_folders = std::move(index.folders);
+        m_albumsByTitle = std::move(index.albumsByTitle); m_allTrackIds = std::move(index.allTracks);
+        m_folderRootId = index.folderRoot;
+        m_artistIndex = std::move(index.artistIndex); m_albumIndex = std::move(index.albumIndex);
+        m_genreIndex = std::move(index.genreIndex); m_folderIndex = std::move(index.folderIndex);
+        m_itemIndex.clear(); m_itemIndex.reserve(m_items.size());
+        for (size_t i = 0; i < m_items.size(); ++i) m_itemIndex.emplace(m_items[i].id, i);
+        m_sharedCount = m_items.size(); ++m_updateId;
     }
     { std::lock_guard<std::mutex> g(m_artMutex); m_artCache.clear(); }
-    FB2K_console_formatter() << "SACD DLNA: indexed " << static_cast<unsigned>(m_sharedCount.load()) << " DSD tracks, UpdateID " << m_updateId;
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    FB2K_console_formatter() << "SACD DLNA: indexed " << static_cast<unsigned>(m_sharedCount.load()) << " DSD tracks in " << static_cast<unsigned>(elapsedMs) << " ms, UpdateID " << m_updateId;
 }
 
 void SacdDlnaServer::share_music_library() {

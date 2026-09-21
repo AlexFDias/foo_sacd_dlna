@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "sacd_decode.h"
+#include <array>
 
 namespace {
 
@@ -7,15 +8,21 @@ static bool isFooSacdName(const char* name) {
     return name && _stricmp(name, "Super Audio CD Decoder") == 0;
 }
 
-static int32_t toInt24(audio_sample sample) {
-    // foo_input_sacd with input_flag_dop exposes DoP as 24-bit PCM carried
-    // in foobar2000's normalized audio_sample representation. Use the SDK's
-    // exact conversion helper so x64 (double audio_sample) retains all bits.
-    uint8_t bytes[3]{};
-    audio_math::convert_to_int24(&sample, 1, bytes, 1.0);
-    return (static_cast<int32_t>(bytes[0]) |
-            (static_cast<int32_t>(bytes[1]) << 8) |
-            (static_cast<int32_t>(bytes[2]) << 16));
+// DoP carries the OLDEST DSD bit in the most significant bit of each byte
+// (MSB first). A DSF file declares "bits per sample = 1", which the DSF
+// specification defines as LSB first, so every byte must be bit-reversed on
+// its way into the file.
+static const std::array<uint8_t, 256>& bitReverseTable() {
+    static const std::array<uint8_t, 256> table = [] {
+        std::array<uint8_t, 256> t{};
+        for (unsigned i = 0; i < 256; ++i) {
+            unsigned v = i, r = 0;
+            for (unsigned b = 0; b < 8; ++b) { r = (r << 1) | (v & 1u); v >>= 1; }
+            t[i] = static_cast<uint8_t>(r);
+        }
+        return t;
+    }();
+    return table;
 }
 
 
@@ -35,6 +42,7 @@ static std::string metaFirst(const file_info& info, std::initializer_list<const 
 
 }
 
+// BEGIN-UNPACKDOP
 bool SacdDecoder::unpackDop(const audio_chunk& chunk,
                       std::vector<std::vector<uint8_t>>& out,
                       uint32_t& dsdRate) {
@@ -50,25 +58,37 @@ bool SacdDecoder::unpackDop(const audio_chunk& chunk,
 
     const audio_sample* samples = chunk.get_data();
     const size_t count = chunk.get_sample_count();
+
+    // foo_input_sacd with input_flag_dop exposes DoP as 24-bit PCM carried in
+    // foobar2000's normalized audio_sample. Convert the whole chunk with ONE call
+    // (SIMD path) instead of one call per sample, which was the hot spot for
+    // DSD256 (about 1.4 million calls per second of audio). Output is packed
+    // little-endian 24-bit, interleaved L,R,L,R...: byte 0 = low 8 bits,
+    // byte 1 = middle 8 bits, byte 2 = DoP marker.
+    std::vector<uint8_t> raw(count * 2 * 3 + 4);
+    audio_math::convert_to_int24(samples, count * 2, raw.data(), 1.0);
+
     out.assign(2, {});
-    out[0].reserve(count * 2);
-    out[1].reserve(count * 2);
+    out[0].resize(count * 2);
+    out[1].resize(count * 2);
+    const auto& rev = bitReverseTable();
 
     for (size_t i = 0; i < count; ++i) {
-        const int32_t l = toInt24(samples[i * 2 + 0]);
-        const int32_t r = toInt24(samples[i * 2 + 1]);
-
-        const uint8_t lm = static_cast<uint8_t>((static_cast<uint32_t>(l) >> 16) & 0xFF);
-        const uint8_t rm = static_cast<uint8_t>((static_cast<uint32_t>(r) >> 16) & 0xFF);
+        const uint8_t* l = raw.data() + i * 6;
+        const uint8_t* r = l + 3;
+        const uint8_t lm = l[2], rm = r[2];
         if ((lm != 0x05 && lm != 0xFA) || (rm != 0x05 && rm != 0xFA)) return false;
 
-        out[0].push_back(static_cast<uint8_t>(l & 0xFF));
-        out[0].push_back(static_cast<uint8_t>((static_cast<uint32_t>(l) >> 8) & 0xFF));
-        out[1].push_back(static_cast<uint8_t>(r & 0xFF));
-        out[1].push_back(static_cast<uint8_t>((static_cast<uint32_t>(r) >> 8) & 0xFF));
+        // Bits 15..8 of the DoP word are the OLDER 8 DSD samples and bits 7..0
+        // the newer 8, so the middle byte must be written first.
+        out[0][i * 2 + 0] = rev[l[1]];
+        out[0][i * 2 + 1] = rev[l[0]];
+        out[1][i * 2 + 0] = rev[r[1]];
+        out[1][i * 2 + 1] = rev[r[0]];
     }
     return true;
 }
+// END-UNPACKDOP
 
 input_entry::ptr SacdDecoder::findFooSacd(const char* path) {
     pfc::list_t<input_entry::ptr> inputs;

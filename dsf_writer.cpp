@@ -66,13 +66,20 @@ void DsfWriter::append(const std::vector<std::vector<uint8_t>>& channelBytes) {
         m_pending[ch].insert(m_pending[ch].end(), channelBytes[ch].begin(), channelBytes[ch].end());
     }
 
-    while (m_pending[0].size() >= 4096 && m_pending[1].size() >= 4096) {
-        writeBytes(m_pending[0].data(), 4096);
-        writeBytes(m_pending[1].data(), 4096);
-        m_pending[0].erase(m_pending[0].begin(), m_pending[0].begin() + 4096);
-        m_pending[1].erase(m_pending[1].begin(), m_pending[1].begin() + 4096);
+    // Write every complete block, then drop all consumed bytes with a single
+    // erase (erasing 4096 bytes from the front per block was O(n) each time).
+    size_t consumed = 0;
+    while (m_pending[0].size() - consumed >= 4096 && m_pending[1].size() - consumed >= 4096) {
+        writeBytes(m_pending[0].data() + consumed, 4096);
+        writeBytes(m_pending[1].data() + consumed, 4096);
+        consumed += 4096;
         m_bytesPerChannel += 4096;
     }
+    if (consumed) {
+        m_pending[0].erase(m_pending[0].begin(), m_pending[0].begin() + static_cast<std::ptrdiff_t>(consumed));
+        m_pending[1].erase(m_pending[1].begin(), m_pending[1].begin() + static_cast<std::ptrdiff_t>(consumed));
+    }
+    if (!m_file) throw std::runtime_error("DSF write failed (disk full or file locked?)");
     m_fileSize = static_cast<uint64_t>(m_file.tellp());
 }
 
@@ -82,12 +89,18 @@ void DsfWriter::finish(uint64_t samplesPerChannel) {
     if (m_pending[0].size() != m_pending[1].size())
         throw std::runtime_error("DSF channel block sizes became unbalanced");
     if (!m_pending[0].empty()) {
-        writeBytes(m_pending[0].data(), m_pending[0].size());
-        writeBytes(m_pending[1].data(), m_pending[1].size());
-        m_bytesPerChannel += m_pending[0].size();
+        // The DSF format stores whole 4096-byte blocks per channel. The final,
+        // partial block is padded with zero bytes; the fmt chunk's sample count
+        // tells players how many of those samples are valid.
+        m_pending[0].resize(4096, 0);
+        m_pending[1].resize(4096, 0);
+        writeBytes(m_pending[0].data(), 4096);
+        writeBytes(m_pending[1].data(), 4096);
+        m_bytesPerChannel += 4096;
         m_pending[0].clear();
         m_pending[1].clear();
     }
+    if (!m_file) throw std::runtime_error("DSF write failed before finalising the header");
     m_fileSize = static_cast<uint64_t>(m_file.tellp());
 
     const uint64_t dataChunkSize = 12 + m_bytesPerChannel * m_channels;

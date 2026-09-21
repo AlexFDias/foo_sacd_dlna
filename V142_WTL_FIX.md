@@ -11,13 +11,13 @@ This project uses the same compiler family as the supplied foobar2000 SDK projec
 The WTL tree used by this project is:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
+<SDK root>\<WTL folder>\include
 ```
 
 In particular:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include\atlapp.h
+<SDK root>\<WTL folder>\include\atlapp.h
 ```
 
 The `atlapp.h` error is a WTL include-path problem, not a reason to switch the project from v142 to v143.
@@ -41,7 +41,7 @@ Run:
 or explicitly:
 
 ```powershell
-.\tools\check_build_env.ps1 -WtlInclude 'D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include'
+.\tools\check_build_env.ps1 -WtlInclude '<SDK root>\<WTL folder>\include'
 ```
 
 Then:
@@ -51,3 +51,13 @@ Then:
 ```
 
 The project file accepts `WTLIncludeDir` and defaults to the canonical SDK-relative WTL directory when no override is supplied.
+
+
+## Alpha 3 O relocation change
+
+The previous documentation used a fixed folder name for WTL. Alpha 3 O removes that requirement. `WTL.props` auto-discovers a sibling WTL directory by checking for `include\atlapp.h`; explicit `WTLIncludeDir`, `WTL_INCLUDE`, and `WTL_ROOT` overrides remain supported.
+
+
+### Alpha 3 P — WTL discovery fix
+
+A Alpha 3 P corrige a sintaxe MSBuild da descoberta automática do WTL. Não se deve usar `@(WTLMarker)` numa expressão `Condition`; o marcador é agora convertido em propriedade dentro de um `PropertyGroup`. Se existirem várias instalações WTL detectáveis, definir explicitamente `WTLIncludeDir` em `WTL.user.props`.

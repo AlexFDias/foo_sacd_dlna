@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Relocatable WTL support.
+
+    Rules:
+      1. WTLIncludeDir / WTL_INCLUDE / WTL_ROOT may provide an explicit path.
+      2. Otherwise, discovery happens inside the ApplyFooSacdDlnaWTL target by
+         looking for a sibling directory containing include\atlapp.h.
+      3. The discovered path is applied to ClCompile metadata inside a Target.
+         Do NOT use @(WTLMarker) inside ItemDefinitionGroup metadata or a
+         scalar Condition; MSBuild rejects those item-list expressions there.
+
+    A separate SDK-root Directory.Build.targets can inject WTL into referenced
+    SDK projects such as libPPUI and foobar2000_sdk_helpers.
+  -->
+  <PropertyGroup>
+    <WTLIncludeDir Condition="'$(WTLIncludeDir)'=='' and '$(WTL_INCLUDE)'!=''">$(WTL_INCLUDE)</WTLIncludeDir>
+    <WTLIncludeDir Condition="'$(WTLIncludeDir)'=='' and '$(WTL_ROOT)'!=''">$(WTL_ROOT)\include</WTLIncludeDir>
+    <FooSDKRoot Condition="'$(FooSDKRoot)'==''">$(SolutionDir)..\..\</FooSDKRoot>
+  </PropertyGroup>
+
+  <Target Name="ApplyFooSacdDlnaWTL" BeforeTargets="ClCompile">
+    <ItemGroup>
+      <_WTLMarker Include="$(FooSDKRoot)*\include\atlapp.h" Condition="'$(WTLIncludeDir)'==''" />
+    </ItemGroup>
+
+    <PropertyGroup>
+      <WTLIncludeDir Condition="'$(WTLIncludeDir)'=='' and '%(_WTLMarker.Identity)'!=''">%(_WTLMarker.RootDir)%(_WTLMarker.Directory)</WTLIncludeDir>
+    </PropertyGroup>
+
+    <Error Condition="'$(WTLIncludeDir)'==''" Text="WTL could not be located. Set WTLIncludeDir, WTL_INCLUDE, or WTL_ROOT, or place a WTL folder containing include\atlapp.h under $(FooSDKRoot)." />
+    <Error Condition="'$(WTLIncludeDir)'!='' and !Exists('$(WTLIncludeDir)\atlapp.h')" Text="WTLIncludeDir is set but atlapp.h was not found: '$(WTLIncludeDir)'." />
+
+    <Message Importance="Low" Text="foo_sacd_dlna WTL include: $(WTLIncludeDir)" />
+
+    <ItemGroup Condition="'$(WTLIncludeDir)'!=''">
+      <ClCompile Update="@(ClCompile)">
+        <AdditionalIncludeDirectories>$(WTLIncludeDir);%(ClCompile.AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      </ClCompile>
+    </ItemGroup>
+  </Target>
+</Project>

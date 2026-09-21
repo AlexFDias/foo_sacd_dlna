@@ -236,21 +236,21 @@ private:
 
     void OnHelp(UINT, int, CWindow) {
         const char* msg =
-            "SACD DLNA\\n\\n"
-            "This component exposes native DSD music from foobar2000 over UPnP/DLNA.\\n\\n"
-            "Requirements:\\n"
-            "- foobar2000 x64\\n"
-            "- Super Audio CD Decoder (foo_input_sacd.dll) for SACD ISO\\n"
-            "- DSD64, DSD128 or DSD256 source material\\n\\n"
-            "DSD is kept native for the network stream. No DSD-to-PCM conversion is performed by this component.\\n\\n"
-            "Music Library sharing uses foobar2000's Media Library and exposes DSD-capable files (ISO/DSF/DFF) grouped as Artist > Album > Track. Album art is served through UPnP when available.\\n\\n"
-            "Status: BROADCASTING means SSDP/server discovery is active. TRANSMITTING means a renderer is actually downloading audio. TX is the measured TCP transmit rate. The T+A SDX state shows detected renderer identity and active-client correlation when possible.\\n\\n"
-            "SACD ISO: the installed foo_input_sacd decoder supplies DSD through the public foobar2000 decoder interface; a persistent DSF cache is then delivered over HTTP/DLNA. Native DSF/DFF files are served directly.\\n\\n"
-            "Stability Mode separates SACD conversion/cache work from network delivery. The pre-buffer/read-ahead is intended to absorb short disk/network fluctuations; it cannot compensate for a sustained network throughput deficit.\\n\\n"
-            "Diagnostics: enable Verbose network logging to trace SSDP discovery, T+A renderer detection, ConnectionManager protocol negotiation, Browse/BrowseMetadata requests, media GET/Range requests, cache hits/misses, errors and stream termination in the foobar2000 Console.\\n\\n"
-            "BrowseMetadata is handled separately from BrowseDirectChildren. StartingIndex and RequestedCount are honoured, and GetSystemUpdateID is exposed for Media Library change tracking.\\n\\n"
-            "Gapless note: the server preserves track order and exact duration metadata, but gapless transition timing ultimately depends on the renderer/firmware because this component is a MediaServer rather than the SDX transport controller.\\n\\n"
-            "For the full field-by-field reference, network examples and troubleshooting, see HELP.md, EXAMPLES.md and NETWORK_REQUIREMENTS.md in the project repository.\\n\\n"
+            "SACD DLNA\n\n"
+            "This component exposes native DSD music from foobar2000 over UPnP/DLNA.\n\n"
+            "Requirements:\n"
+            "- foobar2000 x64\n"
+            "- Super Audio CD Decoder (foo_input_sacd.dll) for SACD ISO\n"
+            "- DSD64, DSD128 or DSD256 source material\n\n"
+            "DSD is kept native for the network stream. No DSD-to-PCM conversion is performed by this component.\n\n"
+            "Music Library sharing uses foobar2000's Media Library and exposes DSD-capable files (ISO/DSF/DFF) grouped as Artist > Album > Track. Album art is served through UPnP when available.\n\n"
+            "Status: BROADCASTING means SSDP/server discovery is active. TRANSMITTING means a renderer is actually downloading audio. TX is the measured TCP transmit rate. The T+A SDX state shows detected renderer identity and active-client correlation when possible.\n\n"
+            "SACD ISO: the installed foo_input_sacd decoder supplies DSD through the public foobar2000 decoder interface; a persistent DSF cache is then delivered over HTTP/DLNA. Native DSF/DFF files are served directly.\n\n"
+            "Stability Mode separates SACD conversion/cache work from network delivery. The pre-buffer/read-ahead is intended to absorb short disk/network fluctuations; it cannot compensate for a sustained network throughput deficit.\n\n"
+            "Diagnostics: enable Verbose network logging to trace SSDP discovery, T+A renderer detection, ConnectionManager protocol negotiation, Browse/BrowseMetadata requests, media GET/Range requests, cache hits/misses, errors and stream termination in the foobar2000 Console.\n\n"
+            "BrowseMetadata is handled separately from BrowseDirectChildren. StartingIndex and RequestedCount are honoured, and GetSystemUpdateID is exposed for Media Library change tracking.\n\n"
+            "Gapless note: the server preserves track order and exact duration metadata, but gapless transition timing ultimately depends on the renderer/firmware because this component is a MediaServer rather than the SDX transport controller.\n\n"
+            "For the full field-by-field reference, network examples and troubleshooting, see HELP.md, EXAMPLES.md and NETWORK_REQUIREMENTS.md in the project repository.\n\n"
             "This is an alpha development build. Protocol negotiation is renderer-aware, but final compatibility and gapless behaviour must be verified against the exact T+A SDX 3100 HV firmware in use.";
         popup_message::g_show(msg, "foo_sacd_dlna Help");
     }

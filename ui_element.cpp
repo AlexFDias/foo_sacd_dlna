@@ -116,7 +116,7 @@ protected:
         drawText(dc.m_hDC, 12, 104, W / 2 - 18, 20, ("HTTP requests: " + std::to_string(st.httpRequests) + " (remote " + std::to_string(st.remoteHttpRequests) + ")" +
             "   last peer: " + std::string(st.lastRemotePeer.is_empty() ? "-" : st.lastRemotePeer.c_str())).c_str());
 
-        drawText(dc.m_hDC, 12, 132, W - 24, 20, "SERVER READ-AHEAD / BUFFER RESERVE");
+        drawText(dc.m_hDC, 12, 132, W - 24, 20, "SERVER SEND BUFFER / READ-AHEAD RESERVE (ESTIMATE)");
         if (st.prebufferTargetBytes) {
             drawBar(dc.m_hDC, 12, 156, W - 24, 22, st.prebufferBytes, st.prebufferTargetBytes);
             const uint64_t pct = st.prebufferBytes * 100ULL / st.prebufferTargetBytes;
@@ -130,7 +130,7 @@ protected:
         const double reqMbps = static_cast<double>(st.requiredBytesPerSecond) * 8.0 / 1000000.0;
         std::string stream = "AUDIO: " + std::string(st.streamingActive ? "TRANSMITTING" : "IDLE");
         if (st.streamingActive) stream += "  |  TX " + std::to_string(txMbps) + " Mbit/s  |  required " + std::to_string(reqMbps) + " Mbit/s";
-        if (st.realtimeMultiplier > 0.0) stream += "  |  speed " + std::to_string(st.realtimeMultiplier) + "x realtime";
+        if (st.realtimeMultiplier > 0.0) stream += "  |  TX speed " + std::to_string(st.realtimeMultiplier) + "x realtime";
         drawText(dc.m_hDC, 12, 214, W - 24, 20, stream.c_str());
 
         std::string music = "MUSIC: " + std::string(st.streamTitle.is_empty() ? "-" : st.streamTitle.c_str());
@@ -170,8 +170,9 @@ protected:
 
         std::string debug = "Diagnostics: " + std::string(sacd_dlna_cfg::debug_diagnostics ? "ON" : "OFF") +
             "  |  " + std::string(st.networkDiagnostic.is_empty() ? "No probe run" : st.networkDiagnostic.c_str());
-        drawText(dc.m_hDC, 12, 430, W - 24, 36, debug.c_str());
-        drawText(dc.m_hDC, 12, 476, W - 24, 20, "Left click: enable/disable DLNA   |   Right click: run network probe   |   Double click: Preferences");
+        drawText(dc.m_hDC, 12, 430, W - 24, 24, debug.c_str());
+        if (!st.lastError.is_empty()) drawText(dc.m_hDC, 12, 454, W - 24, 20, ("LAST ERROR: " + std::string(st.lastError.c_str())).c_str());
+        drawText(dc.m_hDC, 12, 476, W - 24, 20, "Left click: enable/disable DLNA   |   Right click: run network probe   |   Double click: SACD DLNA Preferences");
     }
 
     void OnClick(UINT, CPoint) {
@@ -193,7 +194,7 @@ protected:
         Invalidate();
     }
 
-    void OnDoubleClick(UINT, CPoint) { standard_commands::main_preferences(); }
+    void OnDoubleClick(UINT, CPoint) { ui_control::get()->show_preferences(GUID{ 0x5fbb3c34, 0x8f75, 0x4e2d, { 0xb6, 0x7f, 0x1d, 0x37, 0x78, 0x8c, 0x0e, 0x29 } }); }
 };
 
 class ui_element_sacd_impl : public ui_element_impl_withpopup<CSacdDlnaWindow> {

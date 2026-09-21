@@ -1,4 +1,4 @@
-# Alpha 3 L — View menu crash fix
+# Alpha 3 O — WTL relocável
 
 **Critical fix:** all commands exposed by View → SACD DLNA now have GUIDs returned by `get_command()`. This prevents the `uBugCheck()` path that could crash foobar2000 when the View menu was opened. See `BUILD_VALIDATION_0.8_ALPHA3_L.md`.
 
@@ -8,15 +8,21 @@ Componente de servidor UPnP/DLNA de DSD nativo para [foobar2000](https://www.foo
 
 > **Estado: Alpha / desenvolvimento**
 >
-> Este repositório contém o código-fonte actual do `foo_sacd_dlna` v0.8 Alpha 3 J. Ainda não é uma versão final nem uma componente oficial do foobar2000.
+> Este repositório contém o código-fonte actual do `foo_sacd_dlna` v0.8 Alpha 3 O. Ainda não é uma versão final nem uma componente oficial do foobar2000.
 
-**Estado da compilação:** a Alpha 3 I foi confirmada pelo responsável do projecto como compilada com sucesso e a funcionar no Windows **Debug x64**, com `pfc` em **Debug FB2K x64**, usando a SDK do foobar2000 2025-03-07, MSVC v142 e os headers WTL documentados neste projecto. A Alpha 3 J contém a integração seguinte do roadmap e necessita de um novo rebuild no Windows. A validação de reprodução no T+A SDX 3100 HV e no firmware exacto continua a ser uma etapa separada.
+**Estado da compilação:** a Alpha 3 I foi confirmada pelo responsável do projecto como compilada com sucesso e a funcionar no Windows **Debug x64**, com `pfc` em **Debug FB2K x64**, usando a SDK do foobar2000 2025-03-07, MSVC v142 e os headers WTL documentados neste projecto. A Alpha 3 M contém a integração seguinte do roadmap e o endurecimento do código, necessitando de novo rebuild no Windows. A validação de reprodução no T+A SDX 3100 HV e no firmware exacto continua a ser uma etapa separada.
+
+## Alpha 3 M — auditoria e endurecimento (baseline histórico)
+
+A Alpha 3 M é uma revisão de robustez sobre a árvore da Alpha 3 L. Foram reforçados o ciclo de vida do servidor, o limite de streams HTTP, a validação do manifesto de cache, o cálculo do tamanho da cache, os erros visíveis no Status, a sincronização dos diagnósticos de rede, o estado dos workers de prefetch, o acesso ao IP local e a normalização das extensões dos ficheiros.
+
+**Estado da compilação:** a Alpha 3 I continua a ser a última versão confirmada pelo utilizador como compilada sem erros e a funcionar em runtime. A Alpha 3 M necessita de novo rebuild em Windows/MSVC v142.
 
 ## UI de buffer e diagnóstico UPnP/DLNA — Alpha 3 J
 
 A Alpha 3 J acrescenta um painel em tempo real **SACD DLNA Status / Diagnostics**. O painel actualiza a cada 500 ms e mostra o read-ahead DSD do servidor, o estado do streaming, o TX medido, o estado HTTP/SSDP e a presença de tráfego na rede.
 
-O indicador de buffer refere-se à **reserva de read-ahead do servidor**, não ao buffer interno do T+A SDX. Durante um stream, o estado pode aparecer como `READY / FULL RESERVE`, `DRAINING / HEALTHY`, `LOW / REFILL NOT AVAILABLE` ou `DEPLETED / RISK OF UNDERRUN`.
+O indicador de buffer refere-se à **estimativa da reserva de send-buffer / read-ahead do servidor**, não ao buffer interno do T+A SDX. Durante um stream, o estado pode aparecer como `READY / FULL RESERVE`, `DRAINING / HEALTHY`, `LOW / REFILL NOT AVAILABLE` ou `DEPLETED / RISK OF UNDERRUN`.
 
 A secção de rede distingue `SSDP NOTIFY sent`, `HTTP self-test`, `SSDP self-probe` e `NETWORK VISIBILITY`. O UI só apresenta `CONFIRMED / REMOTE SSDP M-SEARCH` ou `CONFIRMED / REMOTE HTTP` depois de um equipamento não local contactar efectivamente o servidor.
 
@@ -341,30 +347,7 @@ See `PROTOCOL_COMPATIBILITY.md` for renderer negotiation details and `HARDWARE_V
 
 ## Validação de compilação — 0.8 Alpha 3 J
 
-**A Alpha 3 J ainda requer um novo rebuild no Windows.** A última compilação confirmada sem erros é a Alpha 3 E. A Alpha 3 J acrescenta a nova UI de diagnóstico, sondagem SSDP e métricas de presença de rede; essas alterações ainda não foram marcadas como build-validating até serem compiladas no ambiente Windows do projecto.
-
-```text
-foobar2000_component_client  OK
-foobar2000_sdk_helpers       OK
-pfc                         OK
-foobar2000_SDK              OK
-libPPUI                     OK
-foo_sacd_dlna               OK
-```
-
-Ambiente registado nesta validação:
-
-```text
-foobar2000 SDK: 2025-03-07
-Plataforma:      x64
-Configuração:    Debug
-Toolset:         MSVC v142
-WTL:             SDK-2025-03-07\WTL\include
-```
-
-Isto confirma uma configuração de código/projecto que compila correctamente. Não constitui, por si só, certificação de compatibilidade em runtime, reprodução gapless ou comportamento com um firmware específico do T+A SDX 3100 HV.
-
-Consulta [`BUILD_VALIDATION_0.8_ALPHA3_E.md`](BUILD_VALIDATION_0.8_ALPHA3_E.md) para o último registo detalhado de compilação confirmada.
+A Alpha 3 J é uma revisão posterior e **não foi validada neste ambiente de compilação**. A última versão que o utilizador confirmou como compilada sem erros e a funcionar é a Alpha 3 I. Consulta `BUILD_VALIDATION_0.8_ALPHA3_I.md`.
 
 ## Compilação / Build
 
@@ -401,7 +384,7 @@ também necessita dos headers da **WTL** (incluindo `atlapp.h`). Consulta
 This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
+<SDK root>\<WTL folder>\include
 ```
 
 See `BUILD.md`, `WTL_SETUP.md` and `V142_WTL_FIX.md` for the complete configuration.
@@ -417,3 +400,31 @@ O painel Status / Diagnostics mostra agora a música actual (título/artista/ál
 ### View → SACD DLNA menu hardening — Alpha 3 K
 
 The complete View → SACD DLNA command set was reviewed. Library sharing is now a true toggle, the preferences command opens the dedicated SACD DLNA page directly, and refresh/clear-library/clear-cache actions are available from the same menu. DSD Processor toggling now only re-indexes an already shared/running DLNA library.
+## Alpha 3 N — Windows discovery hardening
+
+Improved Windows UPnP/DLNA discovery compatibility: LAN-interface selection for the advertised LOCATION, DLNA device namespace/description, SSDP service announcements and service-type M-SEARCH responses. Added explicit advertised LOCATION diagnostics. Windows Explorer discovery remains dependent on the Windows SSDP/Function Discovery stack and firewall configuration.
+
+
+
+## WTL relocável — Alpha 3 O
+
+A pasta do WTL já não tem de se chamar `WTL`. O `WTL.props` procura automaticamente, na raiz da SDK, uma pasta irmã que contenha `include\atlapp.h`. Também podes definir `WTLIncludeDir`, `WTL_INCLUDE` ou `WTL_ROOT`, ou usar um ficheiro local `WTL.user.props`. Consulta `WTL_RELOCATION.md`.
+
+
+### Alpha 3 P — correcção de descoberta WTL
+
+A descoberta do WTL foi corrigida para evitar referências a listas de itens dentro de `Condition`.
+
+
+### Alpha 3 Q — WTL relocation / MSBuild fix
+
+Alpha 3 Q removes the invalid MSBuild item-list-to-property conversion from WTL discovery. It also adds an SDK-root `Directory.Build.targets` overlay so WTL headers are injected into referenced projects such as libPPUI and foobar2000_sdk_helpers. The `tools/install_wtl_support.ps1` script auto-detects any WTL folder containing `include\atlapp.h`, independent of the folder name.
+
+## Alpha 3 S — correcções de compilação
+A Alpha 3 S corrige os erros C2664/C2668/C3487 detectados no `dlna_server.cpp` e inclui uma forma segura de propagar o WTL aos projectos `libPPUI` e `foobar2000_sdk_helpers` do SDK.
+
+Executar uma vez após mudar o nome/localização da pasta WTL:
+
+```powershell
+.\tools\apply_sdk_wtl_patch.ps1 -SdkRoot 'D:\SDK-2025-03-07'
+```

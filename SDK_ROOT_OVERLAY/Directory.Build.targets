@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Optional helper for SDK builds. It never injects an item-list expression into
+       AdditionalIncludeDirectories; the include path is first reduced to a scalar property. -->
+  <Target Name="FooSacdDlnaInjectWTL" BeforeTargets="ClCompile">
+    <ItemGroup>
+      <_FooSacdWTL Include="$(FooSacdWtlSearchRoot)*\include\atlapp.h" Condition="'$(WTLIncludeDir)'=='' and '$(FooSacdWtlSearchRoot)'!=''" />
+    </ItemGroup>
+    <PropertyGroup>
+      <WTLIncludeDir Condition="'$(WTLIncludeDir)'=='' and '%(_FooSacdWTL.RootDir)%(_FooSacdWTL.Directory)'!=''">%(_FooSacdWTL.RootDir)%(_FooSacdWTL.Directory)</WTLIncludeDir>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(WTLIncludeDir)'!=''">
+      <ClCompile Update="@(ClCompile)">
+        <AdditionalIncludeDirectories>$(WTLIncludeDir);%(ClCompile.AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      </ClCompile>
+    </ItemGroup>
+  </Target>
+</Project>

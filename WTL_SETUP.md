@@ -1,83 +1,70 @@
-# WTL setup for the v142 build
+# WTL setup — v142
 
-The foobar2000 SDK helper layer and `foo_sacd_dlna` use WTL headers such as `atlapp.h`.
-WTL is separate from ATL.
+`foo_sacd_dlna` requires the WTL headers because the component uses headers such as `atlapp.h`. WTL is separate from ATL.
 
-## Official WTL location used by this project
+## Relocatable WTL path
 
-For the SDK tree used in this project, the WTL headers are expected at:
+The project does **not** require the WTL directory to be named `WTL`.
 
-```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
-```
-
-The following file must exist:
+Place WTL beside the `foobar2000` directory in the SDK tree, with:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include\atlapp.h
+<SDK root>\<any WTL folder name>\include\atlapp.h
 ```
 
-Other required WTL headers include:
+The project automatically searches for `include\atlapp.h`.
+
+Example:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include\atlctrls.h
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include\atlwin.h
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include\atlcrack.h
+D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL_renamed\include\atlapp.h
 ```
 
-Keep this WTL tree separate from the source code of `foo_sacd_dlna`. Do not copy individual WTL headers into the component directory.
+No project-file edit is required.
 
-## Required Visual Studio components
+## Explicit path override
 
-- Visual Studio 2022
-- Desktop development with C++
-- MSVC v142 / 14.29 x64/x86 build tools
-- ATL for v142
-- Windows SDK
-- WTL headers from the SDK tree above
-
-## Visual Studio configuration
-
-In **Visual Studio → Project Properties → C/C++ → General → Additional Include Directories** the component must see:
+Use `WTLIncludeDir`, `WTL_INCLUDE`, or `WTL_ROOT`:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
+WTLIncludeDir = C:\Libraries\WTL_renamed\include
 ```
+
+or:
+
+```powershell
+$env:WTL_INCLUDE = 'C:\Libraries\WTL_renamed\include'
+```
+
+For `WTL_ROOT`, point to the WTL directory itself:
+
+```powershell
+$env:WTL_ROOT = 'C:\Libraries\WTL_renamed'
+```
+
+## Required headers
+
+At minimum:
+
+```text
+include\atlapp.h
+include\atlctrls.h
+include\atlwin.h
+include\atlcrack.h
+```
+
+## Visual Studio
 
 Use:
 
-```text
-Configuration: All Configurations
-Platform: x64
-```
+- Visual Studio 2022
+- Desktop development with C++
+- MSVC v142
+- ATL for v142
+- Windows SDK
+- WTL headers
 
-The same WTL include directory must be visible to the SDK helper project `foobar2000_sdk_helpers`.
-
-## Using the project property
-
-The component accepts:
-
-```text
-WTLIncludeDir = D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
-```
-
-or the build script can pass this value to MSBuild.
-
-## PowerShell environment variable (optional)
-
-To keep the path available to tools and scripts:
-
-```powershell
-[Environment]::SetEnvironmentVariable(
-    'WTL_ROOT',
-    'D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL',
-    'User'
-)
-```
-
-Restart Visual Studio after changing the user environment.
-
-## Check the installation
+## Environment check
 
 From a Visual Studio Developer PowerShell:
 
@@ -85,64 +72,27 @@ From a Visual Studio Developer PowerShell:
 .\tools\check_build_env.ps1
 ```
 
-The checker uses the project's canonical WTL path by default. You can also specify it explicitly:
+To force a path:
 
 ```powershell
-.\tools\check_build_env.ps1 -WtlInclude 'D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include'
+.\tools\check_build_env.ps1 -WtlInclude 'C:\Libraries\WTL_renamed\include'
 ```
 
 ## Build
-
-Debug:
 
 ```powershell
 .\tools\build.ps1 -Configuration Debug -Platform x64
 ```
 
-Release:
+With an explicit path:
 
 ```powershell
-.\tools\build.ps1 -Configuration Release -Platform x64
+.\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude 'C:\Libraries\WTL_renamed\include'
 ```
 
-If you want to pass the path explicitly:
+See `WTL_RELOCATION.md` for the implementation details and supported layouts.
 
-```powershell
-.\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude 'D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include'
-```
 
-Clean and build:
+### Alpha 3 P — WTL discovery fix
 
-```powershell
-.\tools\build.ps1 -Configuration Debug -Platform x64 -Clean
-```
-
-## Why `atlapp.h` was missing
-
-The diagnostic:
-
-```text
-foobar2000-lite+atl.h(...): fatal error C1083:
-'atlapp.h': No such file or directory
-```
-
-means the WTL include directory was not visible to the compiler. ATL installation alone does not provide `atlapp.h`.
-
-## Expected build chain
-
-```text
-Visual Studio 2022
-      │
-      ├── MSVC v142
-      ├── ATL v142
-      ├── Windows SDK
-      └── WTL
-          │
-          └── D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
-                    │
-                    ▼
-           foobar2000 SDK helpers
-                    │
-                    ▼
-              foo_sacd_dlna
-```
+A Alpha 3 P corrige a sintaxe MSBuild da descoberta automática do WTL. Não se deve usar `@(WTLMarker)` numa expressão `Condition`; o marcador é agora convertido em propriedade dentro de um `PropertyGroup`. Se existirem várias instalações WTL detectáveis, definir explicitamente `WTLIncludeDir` em `WTL.user.props`.

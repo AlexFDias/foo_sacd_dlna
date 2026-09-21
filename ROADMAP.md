@@ -1,8 +1,18 @@
+# Alpha 3 M — code hardening
+
+### Alpha 3 M — completed hardening
+- [x] Lifecycle-safe start/stop recovery
+- [x] HTTP concurrency-limit response ordering
+- [x] Exact cache-manifest validation and decoder-version invalidation
+- [x] Live diagnostic synchronization and filesystem-scan throttling
+- [x] Prefetch worker/state cleanup hardening
+- [ ] Fresh Windows/MSVC v142 rebuild
+
 # Alpha 3 L — View menu crash fix
 
 **Critical fix:** all commands exposed by View → SACD DLNA now have GUIDs returned by `get_command()`. This prevents the `uBugCheck()` path that could crash foobar2000 when the View menu was opened. See `BUILD_VALIDATION_0.8_ALPHA3_L.md`.
 
-# foo_sacd_dlna Roadmap — v0.8 Alpha 3 J
+# foo_sacd_dlna Roadmap — v0.8 Alpha 3 M
 
 ## Completed in source
 
@@ -32,7 +42,7 @@
 
 ## External validation still required
 
-- Rebuild Alpha 3 J on the maintainer's Windows/MSVC v142 environment.
+- Rebuild the current Alpha 3 M revision on the maintainer's Windows/MSVC v142 environment.
 - Run the `--ssdp` smoke test from a second LAN device.
 - Confirm the SDX 3100 HV appears as a remote SSDP peer and/or HTTP client in the live Status UI.
 - Validate gapless transitions on the exact SDX 3100 HV firmware in use.
@@ -45,3 +55,7 @@
 ### View → SACD DLNA menu hardening — Alpha 3 K
 
 The complete View → SACD DLNA command set was reviewed. Library sharing is now a true toggle, the preferences command opens the dedicated SACD DLNA page directly, and refresh/clear-library/clear-cache actions are available from the same menu. DSD Processor toggling now only re-indexes an already shared/running DLNA library.
+## Alpha 3 N — Windows discovery hardening
+
+Improved Windows UPnP/DLNA discovery compatibility: LAN-interface selection for the advertised LOCATION, DLNA device namespace/description, SSDP service announcements and service-type M-SEARCH responses. Added explicit advertised LOCATION diagnostics. Windows Explorer discovery remains dependent on the Windows SSDP/Function Discovery stack and firewall configuration.
+

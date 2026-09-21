@@ -1,3 +1,51 @@
+# Alpha 3 T — bug-fix and performance pass (proposed)
+
+Applied on top of Alpha 3 S. See `CODE_AUDIT_0.8_ALPHA3_T.md`.
+
+**New: complete browse tree**
+- The root used to expose only `Artists`. It now exposes `Artists`, `Albums`, `Genres`, `Folders` and `All Tracks`:
+  `Artists -> artist -> album -> tracks`, `Albums -> album -> tracks` (album artist shown as `dc:creator`), `Genres -> genre -> tracks`,
+  `Folders -> folder -> (sub-folders and tracks)` mirroring the file system (single-child chains such as `D:\Music\DSD` are skipped),
+  `All Tracks` sorted by title. Grouping, sorting and object ids live in the new `library_index.h`.
+- ContentDirectory: `GetSearchCapabilities` and `GetSortCapabilities` are declared in the SCPD and answered (empty lists). Before, every
+  request that was not `GetSystemUpdateID` was answered as a `Browse`, so control points calling these mandatory actions received a
+  `BrowseResponse` and many gave up. Unknown actions now get UPnP error 401 instead of a Browse.
+
+**Correctness**
+- foobar2000 paths (`file://D:\Music\a.dsf`, and `core_api::get_profile_path()`) are converted to native Windows paths with the SDK's `foobar2000_io::extract_native_path` before any disk access. Previously the cache folder, `network.log`, native DSF/DFF streaming and the artwork cache were handed a `file://...` string.
+- DoP -> DSF: bytes are written in time order (older byte first) and every byte is bit-reversed, as required by a DSF declaring "bits per sample = 1" (LSB first). The previous order scrambled the noise-shaped quantisation noise: in-band SNR of a decoded test signal dropped by 29-44 dB.
+- DSF: the last partial block of each channel is zero-padded to a full 4096-byte block, as the format requires; write failures are detected instead of producing a silently truncated file.
+- `serveMedia()` always returns `true` once response headers are sent, so `handleClient` no longer appends a `404` to a half-sent audio stream.
+- Browse: `StartingIndex + RequestedCount` can no longer wrap around 32 bits (some renderers send `0xFFFFFFFF`).
+- Help dialog showed literal `\n` sequences.
+
+**Performance**
+- `publish()` reads tags and file statistics from the metadb cache (`get_info_ref`, `get_filestats`) instead of opening and `stat`-ing every file on the main thread; grouping and sorting use hash lookups (the old code was O(items x albums) and O(items^2) in the sorts).
+- Browse builds its response from the shared library under the lock instead of copying every item/artist/album per request; `BrowseResponse` reads `UpdateID` directly instead of building a full status snapshot.
+- Component probes (`sacd_plugin_installed`, `dsd_processor_installed`) are cached after start-up, the library callback no longer builds a status snapshot per event, and DoP unpacking converts a whole chunk per call instead of one call per sample.
+- Finished HTTP client and prefetch `std::thread` objects are joined and released instead of accumulating until the server stops.
+
+**Behaviour change**
+- Albums are grouped under the album artist when tagged (falling back to the track artist), so a compilation is no longer split into one pseudo-album per track artist. Tracks inside an album are ordered by disc, track number, title.
+
+**Tests**
+- `tests/dsf_dop_selftest/`: bit-exact + `ffmpeg` decode validation of the DoP -> DSF path using the plugin's own code.
+- `tests/library_index_selftest/`: unit test of the artist/album/genre/folder index (74 checks).
+- `tests/browse_tree_selftest/`: compiles the plugin's real `browseDidl()` and `soapActionName()` and crawls the whole tree like a renderer (16,000+ checks: well-formed DIDL-Lite, `childCount` == `TotalMatches`, `parentID` links, paging, every view reaches every track).
+
+**Build status:** not compiled here (no MSVC). Every SDK symbol used by the new code was checked against `SDK-2025-03-07`; a Windows/MSVC v142 rebuild is required.
+
+# Alpha 3 M — code hardening
+
+Alpha 3 M source-level hardening:
+- Lifecycle-safe start/stop recovery for HTTP/SSDP workers and Winsock state.
+- Correct HTTP 503 handling before stream headers are sent.
+- Exact cache-manifest numeric validation and decoder-version invalidation.
+- Throttled filesystem cache-size scans used by the live Status UI.
+- Runtime errors retained for Status even when network logging is disabled.
+- Synchronized prefetch/network diagnostics and normalized source extensions.
+- **Build status:** pending Windows/MSVC v142 rebuild; Alpha 3 I remains the user-confirmed build/runtime baseline.
+
 # Alpha 3 L — View menu crash fix
 
 **Critical fix:** all commands exposed by View → SACD DLNA now have GUIDs returned by `get_command()`. This prevents the `uBugCheck()` path that could crash foobar2000 when the View menu was opened. See `BUILD_VALIDATION_0.8_ALPHA3_L.md`.
@@ -171,3 +219,40 @@ Approximate stereo payload rates: DSD64 = 5.64 Mbit/s; DSD128 = 11.29 Mbit/s; DS
 ### View → SACD DLNA menu hardening — Alpha 3 K
 
 The complete View → SACD DLNA command set was reviewed. Library sharing is now a true toggle, the preferences command opens the dedicated SACD DLNA page directly, and refresh/clear-library/clear-cache actions are available from the same menu. DSD Processor toggling now only re-indexes an already shared/running DLNA library.
+## Alpha 3 N — Windows discovery hardening
+
+Improved Windows UPnP/DLNA discovery compatibility: LAN-interface selection for the advertised LOCATION, DLNA device namespace/description, SSDP service announcements and service-type M-SEARCH responses. Added explicit advertised LOCATION diagnostics. Windows Explorer discovery remains dependent on the Windows SSDP/Function Discovery stack and firewall configuration.
+
+
+
+## Alpha 3 O — WTL relocation hardening
+
+- Removed the dependency on the literal `WTL` directory name for the component build.
+- Added `WTL.props` with marker-header auto-discovery (`include\atlapp.h`) under the SDK root.
+- Added `WTL_INCLUDE`, `WTL_ROOT`, and `WTLIncludeDir` override support.
+- Added `WTL.user.props.example` for machine-local overrides.
+- Updated `tools\build.ps1` and `tools\check_build_env.ps1` to use the same WTL discovery logic.
+- Updated the WTL documentation to describe renamed-folder layouts.
+- Alpha 3 O requires a fresh Windows/MSVC v142 build validation.
+
+
+### Alpha 3 P — WTL discovery fix
+
+Fixed invalid MSBuild condition in relocatable WTL discovery introduced by Alpha 3 O.
+
+
+### Alpha 3 Q — WTL relocation / MSBuild fix
+
+Alpha 3 Q removes the invalid MSBuild item-list-to-property conversion from WTL discovery. It also adds an SDK-root `Directory.Build.targets` overlay so WTL headers are injected into referenced projects such as libPPUI and foobar2000_sdk_helpers. The `tools/install_wtl_support.ps1` script auto-detects any WTL folder containing `include\atlapp.h`, independent of the folder name.
+
+## 0.8 Alpha 3 R — WTL/MSBuild relocation fix
+
+- Removed all `@(WTLMarker...)` expressions from compiler item-definition metadata.
+- WTL auto-discovery now runs in a target immediately before compilation.
+- Discovered WTL include path is injected through `ClCompile Update`, which is valid MSBuild metadata handling.
+- Improved diagnostics for missing `atlapp.h`.
+
+## 0.8 Alpha 3 S — compile fixes
+- Fixed `const std::mutex` locking in live status by making the prefetch mutex mutable.
+- Fixed ambiguous signed/unsigned `jsonNumberFieldEquals()` overload resolution with explicit integer casts.
+- Added `tools/apply_sdk_wtl_patch.ps1` and `WTL_SDK_INTEGRATION.md` so WTL include discovery is propagated to libPPUI and foobar2000_sdk_helpers.

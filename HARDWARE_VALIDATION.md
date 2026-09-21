@@ -82,7 +82,7 @@ Only after these tests should renderer-specific hardcoded workarounds be added.
 This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
+<SDK root>\<WTL folder>\include
 ```
 
 See `BUILD.md`, `WTL_SETUP.md` and `V142_WTL_FIX.md` for the complete configuration.

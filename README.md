@@ -1,4 +1,7 @@
-# Alpha 3 L — View menu crash fix
+# Alpha 3 O — relocatable WTL build
+
+The project no longer depends on the WTL directory being named `WTL`. `WTL.props` auto-discovers a sibling directory containing `include\atlapp.h`; explicit `WTLIncludeDir`, `WTL_INCLUDE`, and `WTL_ROOT` overrides remain supported. See `WTL_RELOCATION.md`.
+
 
 **Critical fix:** all commands exposed by View → SACD DLNA now have GUIDs returned by `get_command()`. This prevents the `uBugCheck()` path that could crash foobar2000 when the View menu was opened. See `BUILD_VALIDATION_0.8_ALPHA3_L.md`.
 
@@ -8,9 +11,15 @@ Native DSD UPnP/DLNA Media Server component for [foobar2000](https://www.foobar2
 
 > **Status: Alpha / development build**
 >
-> This repository contains the current source tree for `foo_sacd_dlna` v0.8 Alpha 3 J. It is not a released foobar2000 component.
+> This repository contains the current source tree for `foo_sacd_dlna` v0.8 Alpha 3 O. It is not a released foobar2000 component.
 
-**Build status:** Alpha 3 I was confirmed by the maintainer as compiling successfully and running on Windows **Debug x64**, with `pfc` built as **Debug FB2K x64**, using the foobar2000 SDK 2025-03-07, MSVC v142 and the WTL headers documented in this repository. Alpha 3 J contains the subsequent roadmap integration and requires a fresh Windows rebuild. Hardware playback validation against the exact T+A SDX 3100 HV firmware remains a separate step.
+**Build status:** Alpha 3 I was confirmed by the maintainer as compiling successfully and running on Windows **Debug x64**, with `pfc` built as **Debug FB2K x64**, using the foobar2000 SDK 2025-03-07, MSVC v142 and the WTL headers documented in this repository. Alpha 3 M contains the subsequent roadmap integration and hardening and requires a fresh Windows rebuild. Hardware playback validation against the exact T+A SDX 3100 HV firmware remains a separate step.
+
+## Alpha 3 M — code audit / hardening (historical baseline)
+
+Alpha 3 M is a source-level robustness pass over the Alpha 3 L tree. It hardens server lifecycle recovery, HTTP stream-limit handling, cache manifest validation, cache-size reporting, live error reporting, network diagnostic synchronization, prefetch worker state, local-IP access, and source-extension normalization.
+
+**Build status:** Alpha 3 I remains the latest user-confirmed revision compiled without errors and working at runtime. Alpha 3 M requires a fresh Windows/MSVC v142 rebuild.
 
 ## Buffer and UPnP/DLNA diagnostics UI — Alpha 3 J
 
@@ -513,16 +522,8 @@ See `PROTOCOL_COMPATIBILITY.md` for renderer negotiation details and `HARDWARE_V
 
 ## Build validation — 0.8 Alpha 3 J
 
-The project maintainer successfully compiled this version on Windows with **Debug x64**. The complete solution built without compilation or linker errors. The validated solution projects were:
-
-```text
-foobar2000_component_client  OK
-foobar2000_sdk_helpers       OK
-pfc                         OK
-foobar2000_SDK              OK
-libPPUI                     OK
-foo_sacd_dlna               OK
-```
+Alpha 3 J is a subsequent source revision and **was not build-validated in this environment**. The latest user-confirmed Windows build/runtime baseline remains Alpha 3 I.
+See `BUILD_VALIDATION_0.8_ALPHA3_I.md`.
 
 Build environment recorded for this validation:
 
@@ -531,7 +532,7 @@ foobar2000 SDK: 2025-03-07
 Platform:       x64
 Configuration:  Debug
 Toolset:        MSVC v142
-WTL:            SDK-2025-03-07\WTL\include
+WTL:            <SDK root>\<WTL folder>\include
 ```
 
 This confirms a clean source/build configuration for the documented development build. It does **not** by itself certify runtime compatibility, gapless playback, or exact-firmware behaviour of the T+A SDX 3100 HV.
@@ -573,7 +574,7 @@ for installation and Visual Studio configuration.
 This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
+<SDK root>\<WTL folder>\include
 ```
 
 See `BUILD.md`, `WTL_SETUP.md` and `V142_WTL_FIX.md` for the complete configuration.
@@ -589,3 +590,20 @@ The Status / Diagnostics panel now shows the active music title/artist/album, so
 ### View → SACD DLNA menu hardening — Alpha 3 K
 
 The complete View → SACD DLNA command set was reviewed. Library sharing is now a true toggle, the preferences command opens the dedicated SACD DLNA page directly, and refresh/clear-library/clear-cache actions are available from the same menu. DSD Processor toggling now only re-indexes an already shared/running DLNA library.
+## Alpha 3 N — Windows discovery hardening
+
+Improved Windows UPnP/DLNA discovery compatibility: LAN-interface selection for the advertised LOCATION, DLNA device namespace/description, SSDP service announcements and service-type M-SEARCH responses. Added explicit advertised LOCATION diagnostics. Windows Explorer discovery remains dependent on the Windows SSDP/Function Discovery stack and firewall configuration.
+
+
+
+### Alpha 3 P — WTL discovery fix
+
+A descoberta do WTL foi corrigida para evitar referências a listas de itens dentro de `Condition`.
+
+
+### Alpha 3 Q — WTL relocation / MSBuild fix
+
+Alpha 3 Q removes the invalid MSBuild item-list-to-property conversion from WTL discovery. It also adds an SDK-root `Directory.Build.targets` overlay so WTL headers are injected into referenced projects such as libPPUI and foobar2000_sdk_helpers. The `tools/install_wtl_support.ps1` script auto-detects any WTL folder containing `include\atlapp.h`, independent of the folder name.
+
+## Alpha 3 S — compile fixes
+Alpha 3 S fixes the live-status mutex constness and signed/unsigned cache-manifest comparison errors found in the user's MSVC build. It also includes a PowerShell patcher to propagate the relocatable WTL include to `libPPUI` and `foobar2000_sdk_helpers`.

@@ -3,6 +3,7 @@
 #include "stdafx.h"
 #include "dsf_writer.h"
 #include "status.h"
+#include "library_index.h"
 
 class SacdDlnaServer {
 public:
@@ -20,8 +21,10 @@ public:
     void clear_persistent_cache();
     bool run_network_diagnostics();
     uint64_t persistent_cache_bytes() const;
+    uint64_t cached_persistent_cache_bytes() const;
     size_t shared_count() const;
     SacdDlnaStatus get_status() const;
+    void record_error(const std::string& message);
 
 private:
     SacdDlnaServer() = default;
@@ -46,21 +49,11 @@ private:
         uint32_t albumId = 0;
     };
 
-    struct Artist {
-        uint32_t id = 0;
-        std::string name;
-        std::string key;
-        std::vector<uint32_t> albumIds;
-    };
-
-    struct Album {
-        uint32_t id = 0;
-        uint32_t artistId = 0;
-        std::string title;
-        std::string key;
-        uint32_t representativeItemId = 0;
-        std::vector<uint32_t> itemIds;
-    };
+    // The browse tree (Artists, Albums, Genres, Folders, All Tracks) is built by library_index.h.
+    using Artist = libindex::Artist;
+    using Album = libindex::Album;
+    using Genre = libindex::Genre;
+    using Folder = libindex::Folder;
 
     struct CacheJob {
         std::condition_variable cv;
@@ -81,6 +74,8 @@ private:
     };
 
     std::atomic<bool> m_running{false};
+    std::atomic<bool> m_wsaStarted{false};
+    mutable std::mutex m_lifecycleMutex;
     std::atomic<size_t> m_sharedCount{0};
     std::atomic<bool> m_sharingLibrary{false};
     std::atomic<bool> m_libraryRefreshPending{false};
@@ -91,9 +86,18 @@ private:
     std::vector<Item> m_items;
     std::vector<Artist> m_artists;
     std::vector<Album> m_albums;
+    std::vector<Genre> m_genres;
+    std::vector<Folder> m_folders;
+    std::vector<uint32_t> m_albumsByTitle;   // album ids, sorted by title
+    std::vector<uint32_t> m_allTrackIds;     // track ids, sorted by title
+    uint32_t m_folderRootId = 0;             // folder shown as "Folders"
+    // id -> position lookups, rebuilt by publish() (a linear scan per child made large Browse pages O(n^2))
+    std::unordered_map<uint32_t, size_t> m_itemIndex, m_artistIndex, m_albumIndex, m_genreIndex, m_folderIndex;
     uint32_t m_nextId = 1;
     uint32_t m_nextArtistId = 1;
     uint32_t m_nextAlbumId = 1;
+    uint32_t m_nextGenreId = 1;
+    uint32_t m_nextFolderId = 1;
     uint16_t m_port = 8192;
     uint32_t m_updateId = 1;
     std::string m_lastHttpRequest;
@@ -101,10 +105,12 @@ private:
     std::mutex m_clientMutex;
     std::vector<ClientState> m_clients;
     std::vector<std::thread> m_clientThreads;
+    std::vector<std::thread::id> m_finishedClientThreads;   // guarded by m_clientMutex; reaped by httpLoop
 
-    std::mutex m_prefetchMutex;
+    mutable std::mutex m_prefetchMutex;
     std::vector<std::shared_ptr<abort_callback_impl>> m_prefetchAborters;
     std::vector<std::thread> m_prefetchThreads;
+    std::vector<std::thread::id> m_finishedPrefetchThreads; // guarded by m_prefetchMutex; reaped by prefetchNextTrack
     std::set<std::string> m_prefetchKeys;
 
     std::mutex m_cacheMutex;
@@ -119,6 +125,7 @@ private:
     std::string m_prefetchTitle;
     std::string m_prefetchState;
     bool m_prefetchActive = false;
+    size_t m_prefetchActiveCount = 0;
     std::string m_sdxConnectionManagerControl;
     std::string m_sdxModelNumber;
 
@@ -144,7 +151,9 @@ private:
     std::string m_networkVisibility;
     std::string m_ssdpLastPeer;
     std::string m_networkDiagnostic;
+    std::string m_lastError;
 
+    void stopUnlocked();
     void httpLoop();
     void ssdpLoop();
     void clientThread(SOCKET s, std::shared_ptr<abort_callback_impl> aborter);
@@ -219,6 +228,9 @@ private:
     void probeSdxConnectionManager(const std::string& controlUrl, const std::string& peerIp);
 
     mutable std::mutex m_rateMutex;
+    mutable std::mutex m_cacheStatsMutex;
+    mutable uint64_t m_cachedCacheBytes = 0;
+    mutable std::chrono::steady_clock::time_point m_cacheStatsTick{};
     uint64_t m_rateBytes = 0;
     mutable uint64_t m_lastRateBytes = 0;
     mutable std::chrono::steady_clock::time_point m_lastRateTick{};

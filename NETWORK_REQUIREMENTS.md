@@ -58,7 +58,7 @@ The PC and T+A should normally be on the same LAN/VLAN for SSDP discovery.
 This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
 
 ```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
+<SDK root>\<WTL folder>\include
 ```
 
 See `BUILD.md`, `WTL_SETUP.md` and `V142_WTL_FIX.md` for the complete configuration.
@@ -89,3 +89,7 @@ python tools/dlna_smoke_test.py <PC-IP> 8192 --ssdp
 ```
 
 A successful response confirms that the second device can send SSDP M-SEARCH and receive this server's MediaServer response. The in-component Status panel reports the same class of evidence once a real remote peer sends M-SEARCH or HTTP traffic.
+## Alpha 3 N — Windows discovery hardening
+
+Improved Windows UPnP/DLNA discovery compatibility: LAN-interface selection for the advertised LOCATION, DLNA device namespace/description, SSDP service announcements and service-type M-SEARCH responses. Added explicit advertised LOCATION diagnostics. Windows Explorer discovery remains dependent on the Windows SSDP/Function Discovery stack and firewall configuration.
+
