@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "config.h"
+#include "client_registry.h"
 #include <SDK/componentversion.h>
 
 namespace sacd_dlna_cfg {
@@ -11,6 +12,7 @@ namespace sacd_dlna_cfg {
     const GUID guid_cfg_prebuffer_seconds = { 0x25b7c5fd, 0x6d6f, 0x4a43, { 0x91, 0x0f, 0xc1, 0xa5, 0x77, 0x58, 0x3c, 0x22 } };
     const GUID guid_cfg_network_logging = { 0x71e873da, 0x2c9c, 0x46bd, { 0x9a, 0x0c, 0x0e, 0x18, 0x92, 0x4a, 0x1e, 0x70 } };
     const GUID guid_cfg_debug_diagnostics = { 0x8b1efce5, 0x1a92, 0x48f8, { 0x9f, 0x2e, 0x33, 0x64, 0x95, 0x1c, 0x7a, 0x41 } };
+    const GUID guid_cfg_max_streams = { 0x967dbbc2, 0x566a, 0x454d, { 0x8a, 0x8a, 0x3b, 0xca, 0x9f, 0xc6, 0x20, 0xa3 } };
     const GUID guid_cfg_shared_formats = { 0x6f0d6b31, 0x6c4a, 0x4a91, { 0x8a, 0x4e, 0x6f, 0x2b, 0x1c, 0x9d, 0x51, 0x73 } };
     const GUID guid_cfg_dsd_processor_enabled = { 0x8abf4a19, 0x58d2, 0x40da, { 0x9e, 0x64, 0x5c, 0x9a, 0x1e, 0x0c, 0x81, 0x36 } };
     const GUID guid_cfg_dsd_processor_preset = { 0x2d8ad0fa, 0x5e4c, 0x4e9d, { 0x92, 0x17, 0x31, 0x1a, 0x4e, 0x8f, 0x77, 0x55 } };
@@ -23,7 +25,8 @@ namespace sacd_dlna_cfg {
     cfg_uint prebuffer_seconds(guid_cfg_prebuffer_seconds, 15);
     cfg_bool network_logging(guid_cfg_network_logging, false);
     cfg_bool debug_diagnostics(guid_cfg_debug_diagnostics, false);
-    cfg_string shared_formats(guid_cfg_shared_formats, "dsf,dff,iso");
+    cfg_string shared_formats(guid_cfg_shared_formats, "dsf,dff,iso,aob,ifo,mlp,thd,truehd,flac,wav,mp3");
+    cfg_uint max_streams(guid_cfg_max_streams, clientreg::kDefaultStreams);
     cfg_bool dsd_processor_enabled(guid_cfg_dsd_processor_enabled, false);
     cfg_dsp_chain_config dsd_processor_preset(guid_cfg_dsd_processor_preset);
 }
@@ -84,6 +87,16 @@ bool sacd_plugin_installed(pfc::string_base* versionOut) {
     });
 }
 
+bool dvda_plugin_installed(pfc::string_base* versionOut) {
+    static ComponentProbe probe;
+    return probeComponent(probe, versionOut, [](const pfc::string8& fileName, const pfc::string8& componentName) {
+        const bool fileMatch = !_stricmp(fileName, "foo_input_dvda.dll");
+        const bool nameMatch = !_stricmp(componentName, "DVD-Audio Decoder and Watermark Detector") ||
+            (strstr(componentName.c_str(), "DVD-Audio") != nullptr && strstr(componentName.c_str(), "Decoder") != nullptr);
+        return fileMatch || nameMatch;
+    });
+}
+
 bool dsd_processor_installed(pfc::string_base* versionOut) {
     static ComponentProbe probe;
     return probeComponent(probe, versionOut, [](const pfc::string8& fileName, const pfc::string8& componentName) {
@@ -92,4 +105,8 @@ bool dsd_processor_installed(pfc::string_base* versionOut) {
             (strstr(componentName.c_str(), "DSD") != nullptr && strstr(componentName.c_str(), "Processor") != nullptr);
         return fileMatch || nameMatch;
     });
+}
+
+uint32_t sacd_dlna_max_streams() {
+    return clientreg::clampStreams(static_cast<uint32_t>(sacd_dlna_cfg::max_streams.get()));
 }

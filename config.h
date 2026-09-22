@@ -14,6 +14,7 @@ namespace sacd_dlna_cfg {
     extern const GUID guid_cfg_network_logging;
     extern const GUID guid_cfg_debug_diagnostics;
     extern const GUID guid_cfg_shared_formats;
+    extern const GUID guid_cfg_max_streams;
     extern const GUID guid_cfg_dsd_processor_enabled;
     extern const GUID guid_cfg_dsd_processor_preset;
 
@@ -26,10 +27,15 @@ namespace sacd_dlna_cfg {
     extern cfg_bool network_logging;
     extern cfg_bool debug_diagnostics;
     extern cfg_string shared_formats;
+    extern cfg_uint max_streams;             // maximum simultaneous audio streams (1..16, default 2)
     extern cfg_bool dsd_processor_enabled;
     extern cfg_dsp_chain_config dsd_processor_preset;
 }
 
+// Concurrent-stream limit from Preferences, always inside 1..16.
+uint32_t sacd_dlna_max_streams();
+
 bool sacd_plugin_installed(pfc::string_base* versionOut = nullptr);
 bool dsd_processor_installed(pfc::string_base* versionOut = nullptr);
+bool dvda_plugin_installed(pfc::string_base* versionOut = nullptr);
 const char* sacd_plugin_required_name();

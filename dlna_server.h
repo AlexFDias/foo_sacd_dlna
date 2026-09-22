@@ -4,6 +4,8 @@
 #include "dsf_writer.h"
 #include "status.h"
 #include "library_index.h"
+#include "client_registry.h"
+#include "dvd_audio_flac.h"
 
 class SacdDlnaServer {
 public:
@@ -48,6 +50,7 @@ private:
         uint32_t sourceBitsPerSample = 0;
         int64_t sourceWriteTime = 0;
         t_uint32 subsong = 0;
+        bool dvdAudio = false;
         metadb_handle_ptr handle;
         DsdTrack track;
         std::wstring cachePath;
@@ -110,6 +113,9 @@ private:
     uint32_t m_updateId = 1;
     std::string m_lastHttpRequest;
 
+    clientreg::Registry m_clientRegistry;        // clients seen, streaming and idle (own lock)
+    clientreg::StreamLimiter m_streamLimiter;    // caps simultaneous audio streams (lock-free)
+
     std::mutex m_clientMutex;
     std::vector<ClientState> m_clients;
     std::vector<std::thread> m_clientThreads;
@@ -167,6 +173,8 @@ private:
     void clientThread(SOCKET s, std::shared_ptr<abort_callback_impl> aborter);
     void handleClient(SOCKET s, abort_callback_impl& aborter);
     void closeClientState(SOCKET s);
+    // True for a real remote client: not empty, not loopback and not this machine's own address (self-test).
+    bool isClientPeer(const std::string& ip) const;
 
     std::string makeDeviceXml() const;
     std::string makeContentDirectoryScpd() const;
@@ -195,6 +203,9 @@ private:
     std::wstring cacheFolder() const;
     bool ensureCached(const Item& item, std::wstring& cachePath, DsdTrack& track,
                       abort_callback& abort, bool reportProgress = true);
+    bool ensureCachedFlac(const Item& item, std::wstring& cachePath, DsdTrack& track,
+                          abort_callback& abort, bool reportProgress = true);
+    static bool isDvdAudioInput(const char* path);
     bool ensureProcessedDsf(const Item& item, std::wstring& cachePath, DsdTrack& track,
                             abort_callback& abort, bool reportProgress = true);
     void prefetchNextTrack(uint32_t itemId);

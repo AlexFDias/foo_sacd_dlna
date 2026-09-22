@@ -165,14 +165,21 @@ protected:
         if (st.streamDuration > 0.0) renderer += "  |  duration " + std::to_string(st.streamDuration) + " s";
         drawText(dc.m_hDC, 12, 382, W - 24, 20, renderer.c_str());
 
+        // total = active (streaming now) + idle (known, not streaming); streams = accepted / allowed
+        const std::string clients = "CLIENTS: " + std::to_string(st.clientsTotal) + " total  |  " + std::to_string(st.clientsActive) + " active  |  " +
+            std::to_string(st.clientsIdle) + " idle  |  " + std::to_string(st.clientsSeenSinceStart) + " seen since start  |  streams " +
+            std::to_string(st.streamSlotsUsed) + " of " + std::to_string(st.streamLimit) + " allowed" +
+            (st.streamsRejected ? "  |  " + std::to_string(st.streamsRejected) + " rejected" : std::string());
+        drawText(dc.m_hDC, 12, 406, W - 24, 20, clients.c_str());
+
         const std::string prefetch = "NEXT TRACK PREP: " + std::string(st.prefetchTitle.is_empty() ? "-" : st.prefetchTitle.c_str()) + "  |  " + std::string(st.prefetchState.is_empty() ? "IDLE" : st.prefetchState.c_str());
-        drawText(dc.m_hDC, 12, 406, W - 24, 20, prefetch.c_str());
+        drawText(dc.m_hDC, 12, 430, W - 24, 20, prefetch.c_str());
 
         std::string debug = "Diagnostics: " + std::string(sacd_dlna_cfg::debug_diagnostics ? "ON" : "OFF") +
             "  |  " + std::string(st.networkDiagnostic.is_empty() ? "No probe run" : st.networkDiagnostic.c_str());
-        drawText(dc.m_hDC, 12, 430, W - 24, 24, debug.c_str());
-        if (!st.lastError.is_empty()) drawText(dc.m_hDC, 12, 454, W - 24, 20, ("LAST ERROR: " + std::string(st.lastError.c_str())).c_str());
-        drawText(dc.m_hDC, 12, 476, W - 24, 20, "Left click: enable/disable DLNA   |   Right click: run network probe   |   Double click: SACD DLNA Preferences");
+        drawText(dc.m_hDC, 12, 454, W - 24, 24, debug.c_str());
+        if (!st.lastError.is_empty()) drawText(dc.m_hDC, 12, 478, W - 24, 20, ("LAST ERROR: " + std::string(st.lastError.c_str())).c_str());
+        drawText(dc.m_hDC, 12, 500, W - 24, 20, "Left click: enable/disable DLNA   |   Right click: run network probe   |   Double click: SACD DLNA Preferences");
     }
 
     void OnClick(UINT, CPoint) {

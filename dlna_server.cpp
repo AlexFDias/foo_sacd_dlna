@@ -12,6 +12,8 @@
 #include <iphlpapi.h>
 #pragma comment(lib, "iphlpapi.lib")
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -34,8 +36,7 @@ constexpr const char* kFolderPrefix = "folder-";
 constexpr size_t kMaxHttpHeader = 128 * 1024;
 constexpr size_t kMaxSoapBody = 2 * 1024 * 1024;
 constexpr uint32_t kCacheFormatVersion = 2;
-constexpr uint32_t kMaxConcurrentStreams = 2;
-constexpr const char* kVersion = "0.8-alpha3-t";
+constexpr const char* kVersion = "0.8-alpha3-u-dvda-flac";
 
 std::string lowerCopy(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -575,6 +576,8 @@ void SacdDlnaServer::start() {
         m_lastRemotePeer.clear();
         m_lastError.clear();
     }
+    m_clientRegistry.reset();
+    m_streamLimiter.resetCounters();
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -693,6 +696,7 @@ SacdDlnaStatus SacdDlnaServer::get_status() const {
     SacdDlnaStatus s;
     s.broadcasting = is_running();
     s.sacdInstalled = sacd_plugin_installed(&s.sacdVersion);
+    s.dvdaInstalled = dvda_plugin_installed();
     s.sharingLibrary = m_sharingLibrary.load();
     s.sharedCount = m_sharedCount.load();
     s.port = m_port;
@@ -806,7 +810,20 @@ SacdDlnaStatus SacdDlnaServer::get_status() const {
         s.prefetchState = m_prefetchState.c_str();
     }
     s.cacheBytes = cached_persistent_cache_bytes();
+    {
+        const clientreg::Counts cc = m_clientRegistry.counts(clientreg::Clock::now());
+        s.clientsTotal = cc.total; s.clientsActive = cc.active; s.clientsIdle = cc.idle; s.clientsSeenSinceStart = cc.seenSinceStart;
+        s.streamLimit = sacd_dlna_max_streams();
+        s.streamSlotsUsed = m_streamLimiter.current();
+        s.streamsRejected = m_streamLimiter.rejected();
+    }
     return s;
+}
+
+bool SacdDlnaServer::isClientPeer(const std::string& ip) const {
+    if (ip.empty() || ip == "unknown" || ip == "127.0.0.1") return false;
+    std::lock_guard<std::mutex> g(m_diagMutex);
+    return ip != m_localIp;
 }
 
 void SacdDlnaServer::updateStreamStart(const std::string& peerIp, const DsdTrack& track,
@@ -823,24 +840,33 @@ void SacdDlnaServer::updateStreamStart(const std::string& peerIp, const DsdTrack
         m_currentBps = 0;
         m_lastRateTick = std::chrono::steady_clock::now();
         m_streamStartTick = m_lastRateTick;
+
+        // Status/diagnostics only track one "now playing" set of fields, but
+        // serveMedia() supports several simultaneous HTTP clients (the limit is the
+        // "Max streams" preference). Only updating these on the 0->1 transition means the Status
+        // UI consistently shows the stream that has been running the longest,
+        // instead of flickering to whichever client most recently connected
+        // (and, on that client's disconnect, snapping back to stale/blank
+        // fields even though an earlier stream is still active). A full
+        // per-connection breakdown is tracked separately - see ROADMAP.md.
+        m_clientIp = peerIp;
+        m_streamTitle = track.title;
+        m_streamArtist = track.artist;
+        m_streamAlbum = track.album;
+        m_streamDsdRate = track.dsdRate;
+        m_streamChannels = track.channels;
+        m_streamBitsPerSample = track.bitsPerSample;
+        m_streamDuration = track.duration;
+        m_sourceFormat = sourceFormat;
+        m_outputFormat = outputFormat;
+        m_pipelineState = pipelineState;
+        m_conversionState = conversionState;
+        m_sourceFileSize = sourceSize;
+        m_outputFileSize = outputSize;
+        m_sourceSampleRate = sourceSampleRate;
+        m_sourceChannels = sourceChannels;
+        m_sourceBitsPerSample = sourceBitsPerSample;
     }
-    m_clientIp = peerIp;
-    m_streamTitle = track.title;
-    m_streamArtist = track.artist;
-    m_streamAlbum = track.album;
-    m_streamDsdRate = track.dsdRate;
-    m_streamChannels = track.channels;
-    m_streamBitsPerSample = track.bitsPerSample;
-    m_streamDuration = track.duration;
-    m_sourceFormat = sourceFormat;
-    m_outputFormat = outputFormat;
-    m_pipelineState = pipelineState;
-    m_conversionState = conversionState;
-    m_sourceFileSize = sourceSize;
-    m_outputFileSize = outputSize;
-    m_sourceSampleRate = sourceSampleRate;
-    m_sourceChannels = sourceChannels;
-    m_sourceBitsPerSample = sourceBitsPerSample;
 }
 
 void SacdDlnaServer::updateStreamBytes(uint64_t bytes) {
@@ -1088,6 +1114,20 @@ std::string SacdDlnaServer::urlPathDecode(const std::string& s) {
 
 std::string SacdDlnaServer::normalizeKey(const std::string& s) { return lowerCopy(s); }
 
+bool SacdDlnaServer::isDvdAudioInput(const char* path) {
+    if (!path || !*path) return false;
+    pfc::list_t<input_entry::ptr> inputs;
+    if (!input_entry::g_find_inputs_by_path(inputs, path, false)) return false;
+    for (auto const& entry : inputs) {
+        input_entry_v2::ptr v2;
+        if (v2 &= entry) {
+            const char* name = v2->get_name();
+            if (name && (strstr(name, "DVD-Audio") || strstr(name, "DVD Audio") || strstr(name, "DVD-A"))) return true;
+        }
+    }
+    return false;
+}
+
 std::string SacdDlnaServer::mimeForExtension(const std::string& ext) {
     if (!_stricmp(ext.c_str(), ".dsf")) return "audio/x-dsf";
     if (!_stricmp(ext.c_str(), ".dff")) return "audio/x-dff";
@@ -1107,19 +1147,29 @@ std::string SacdDlnaServer::mimeForExtension(const std::string& ext) {
 
 
 
+// The "Shared formats" filter as a set of lower-case extensions with a leading dot. It is parsed ONCE per
+// publish()/share_music_library(); formatAllowed() used to re-parse (two string copies plus tokenising) for
+// every single track.
+static std::unordered_set<std::string> parseSharedFormats(const std::string& listText) {
+    std::unordered_set<std::string> out;
+    const std::string list = lowerCopy(listText);
+    size_t pos = 0;
+    while (pos <= list.size()) {
+        const size_t sep = list.find_first_of(",; \t\r\n", pos);
+        std::string token = list.substr(pos, sep == std::string::npos ? std::string::npos : sep - pos);
+        if (!token.empty() && token != ".") {
+            if (token[0] != '.') token.insert(token.begin(), '.');
+            out.insert(token);
+        }
+        if (sep == std::string::npos) break;
+        pos = sep + 1;
+    }
+    return out;
+}
+
 bool SacdDlnaServer::formatAllowed(const std::string& ext) {
     const std::string needle = lowerCopy(ext.empty() || ext[0] == '.' ? ext : "." + ext);
-    std::string list = lowerCopy(std::string(sacd_dlna_cfg::shared_formats.get()));
-    size_t pos = 0;
-    while (pos < list.size()) {
-        const size_t comma = list.find_first_of(",; ", pos);
-        std::string token = list.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
-        if (!token.empty() && token[0] != '.') token = "." + token;
-        if (token == needle) return true;
-        if (comma == std::string::npos) break;
-        pos = comma + 1;
-    }
-    return false;
+    return parseSharedFormats(std::string(sacd_dlna_cfg::shared_formats.get())).count(needle) != 0;
 }
 
 std::string SacdDlnaServer::detectImageMime(const void* data, size_t size) {
@@ -1367,7 +1417,7 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
 
     auto appendTrack = [&](const Item& item, const std::string& parentId, const std::string& objectIdForTrack) {
         const std::string title = item.track.title.empty() ? ("Track " + std::to_string(item.id)) : item.track.title;
-        const std::string servedExt = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) || (_stricmp(item.sourceExt.c_str(), ".iso") == 0) ? ".dsf" : item.sourceExt;
+        const std::string servedExt = item.dvdAudio ? ".flac" : (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) || (_stricmp(item.sourceExt.c_str(), ".iso") == 0) ? ".dsf" : item.sourceExt);
         const std::string defaultMime = mimeForExtension(servedExt);
         const std::string mime = chooseRendererMime(defaultMime);
         out += "<item id=\"" + xmlEscape(objectIdForTrack) + "\" parentID=\"" + xmlEscape(parentId) + "\" restricted=\"1\">";
@@ -1387,7 +1437,8 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
         if (!item.track.publisher.empty()) out += "<dc:publisher>" + xmlEscape(item.track.publisher) + "</dc:publisher>";
         if (!item.track.comment.empty()) out += "<upnp:longDescription>" + xmlEscape(item.track.comment) + "</upnp:longDescription>";
         out += "<upnp:class>object.item.audioItem.musicTrack</upnp:class>";
-        if (item.track.dsdRate || _stricmp(item.sourceExt.c_str(), ".iso") == 0)
+        if (item.dvdAudio) out += "<dc:format>audio/flac</dc:format>";
+        else if (item.track.dsdRate || _stricmp(item.sourceExt.c_str(), ".iso") == 0)
             out += "<dc:format>audio/dsd</dc:format>";
         else
             out += "<dc:format>" + xmlEscape(defaultMime) + "</dc:format>";
@@ -1895,6 +1946,89 @@ bool SacdDlnaServer::ensureCached(const Item& item, std::wstring& cachePath, Dsd
     cachePath = path; return true;
 }
 
+bool SacdDlnaServer::ensureCachedFlac(const Item& item, std::wstring& cachePath, DsdTrack& track, abort_callback& abort, bool reportProgress) {
+    if (!item.dvdAudio) return false;
+    const auto key = std::string("dvda-flac-") + cacheKeyFor(item.sourcePath, item.subsong);
+    const auto path = cacheFolder() + L"\\" + utf8ToWide((key + ".flac").c_str());
+    const auto manifest = cacheMetaPath(path);
+    const bool decoderInstalled = dvda_plugin_installed();
+    if (!decoderInstalled) return false;
+
+    auto cacheValid = [&]() {
+        if (!isRegularFile(path) || !isRegularFile(manifest)) return false;
+        std::ifstream mf(manifest, std::ios::binary);
+        std::string line((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+        pfc::string8 dvdaVersion; dvda_plugin_installed(&dvdaVersion);
+        return jsonNumberFieldEquals(line, "cacheVersion", static_cast<uint64_t>(kCacheFormatVersion)) &&
+            jsonNumberFieldEquals(line, "subsong", static_cast<uint64_t>(item.subsong)) &&
+            jsonNumberFieldEquals(line, "sourceSize", static_cast<uint64_t>(item.sourceSize)) &&
+            jsonNumberFieldEquals(line, "sourceWriteTime", static_cast<int64_t>(item.sourceWriteTime)) &&
+            line.find("\"decoderVersion\":\"" + std::string(dvdaVersion.c_str()) + "\"") != std::string::npos &&
+            fileSizeSafe(path) > 64;
+    };
+    if (cacheValid()) {
+        { std::lock_guard<std::mutex> g(m_rateMutex); ++m_cacheHits; }
+        cachePath = path; track = item.track; track.path = path; track.fileSize = fileSizeSafe(path); track.bitsPerSample = 24;
+        return true;
+    }
+    { std::lock_guard<std::mutex> g(m_rateMutex); ++m_cacheMisses; }
+    std::shared_ptr<CacheJob> job;
+    bool leader = false;
+    {
+        std::lock_guard<std::mutex> g(m_cacheMutex);
+        auto it = m_cacheJobs.find(key);
+        if (it != m_cacheJobs.end()) job = it->second;
+        else { job = std::make_shared<CacheJob>(); m_cacheJobs.emplace(key, job); leader = true; }
+    }
+    if (!leader) {
+        std::unique_lock<std::mutex> lk(m_cacheMutex);
+        while (!job->done) { abort.check(); job->cv.wait_for(lk, std::chrono::milliseconds(100)); }
+        if (!job->success || !cacheValid()) return false;
+        cachePath = path; track = item.track; track.path = path; track.fileSize = fileSizeSafe(path); track.bitsPerSample = 24;
+        return true;
+    }
+    bool success = false;
+    try {
+        const auto tmp = path + L".partial";
+        const auto tmpManifest = manifest + L".partial";
+        DeleteFileW(tmp.c_str()); DeleteFileW(tmpManifest.c_str());
+        if (reportProgress) setConversionStatus(true, 0);
+        uint32_t rate = 0, channels = 0, bits = 0; uint64_t samples = 0;
+        if (!dvd_audio_flac::decode_to_flac(item.sourcePath.c_str(), item.subsong, tmp, job->aborter ? *job->aborter : abort,
+            rate, channels, bits, samples, [this, reportProgress](uint32_t pct) { if (reportProgress) setConversionStatus(true, pct); }))
+            throw std::runtime_error("DVD-Audio decoder produced no PCM samples");
+        abort.check();
+        if (rate == 0 || channels == 0 || samples == 0 || fileSizeSafe(tmp) <= 64) throw std::runtime_error("generated FLAC failed validation");
+        if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("unable to finalize DVD-A FLAC cache");
+        std::ofstream mf(tmpManifest, std::ios::binary | std::ios::trunc);
+        if (!mf) throw std::runtime_error("unable to create DVD-A cache manifest");
+        pfc::string8 dvdaVersion; dvda_plugin_installed(&dvdaVersion);
+        mf << "{\"cacheVersion\":" << kCacheFormatVersion
+           << ",\"subsong\":" << item.subsong
+           << ",\"sourceSize\":" << item.sourceSize
+           << ",\"sourceWriteTime\":" << item.sourceWriteTime
+           << ",\"decoderVersion\":\"" << xmlAttr(dvdaVersion.c_str()) << "\""
+           << ",\"sampleRate\":" << rate << ",\"channels\":" << channels << ",\"bitsPerSample\":" << bits << ",\"samples\":" << samples << "}\n";
+        mf.close();
+        if (!MoveFileExW(tmpManifest.c_str(), manifest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("unable to finalize DVD-A cache manifest");
+        if (reportProgress) setConversionStatus(false, 100);
+        success = true;
+        track = item.track; track.path = path; track.fileSize = fileSizeSafe(path); track.dsdRate = 0; track.channels = channels; track.bitsPerSample = bits; track.duration = rate ? static_cast<double>(samples) / rate : track.duration;
+    } catch (const exception_aborted&) {
+        if (reportProgress) setConversionStatus(false, 0); DeleteFileW((path + L".partial").c_str()); DeleteFileW((manifest + L".partial").c_str());
+        networkLog("DVD-A FLAC conversion aborted: " + item.sourcePath);
+    } catch (std::exception const& e) {
+        if (reportProgress) setConversionStatus(false, 0); DeleteFileW((path + L".partial").c_str()); DeleteFileW((manifest + L".partial").c_str());
+        setLastError(std::string("DVD-A FLAC conversion failed: ") + e.what());
+    }
+    {
+        std::lock_guard<std::mutex> g(m_cacheMutex); job->success = success; job->done = true; m_cacheJobs.erase(key);
+    }
+    job->cv.notify_all();
+    if (!success) return false;
+    cachePath = path; return true;
+}
+
 void SacdDlnaServer::clearPrefetchThreads() {
     std::lock_guard<std::mutex> g(m_prefetchMutex);
     for (auto& a : m_prefetchAborters) if (a) a->set();
@@ -1906,27 +2040,28 @@ void SacdDlnaServer::prefetchNextTrack(uint32_t itemId) {
     uint32_t nextId = 0;
     {
         std::lock_guard<std::mutex> g(m_mutex);
-        for (const auto& x : m_items) {
-            if (x.id == itemId) { current = x; break; }
-        }
+        const auto cur = m_itemIndex.find(itemId);
+        if (cur == m_itemIndex.end() || cur->second >= m_items.size()) return;
+        current = m_items[cur->second];
         if (!current.id || !current.albumId) return;
-        for (const auto& album : m_albums) {
-            if (album.id != current.albumId) continue;
+        const auto alb = m_albumIndex.find(current.albumId);
+        if (alb != m_albumIndex.end() && alb->second < m_albums.size()) {
+            const Album& album = m_albums[alb->second];
             for (size_t i = 0; i + 1 < album.itemIds.size(); ++i) {
                 if (album.itemIds[i] == itemId) { nextId = album.itemIds[i + 1]; break; }
             }
-            break;
         }
     }
     if (!nextId) return;
     Item next;
     {
         std::lock_guard<std::mutex> g(m_mutex);
-        for (const auto& x : m_items) if (x.id == nextId) { next = x; break; }
+        const auto nx = m_itemIndex.find(nextId);
+        if (nx != m_itemIndex.end() && nx->second < m_items.size()) next = m_items[nx->second];
     }
     if (!next.id) return;
 
-    const bool needsCache = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) || _stricmp(next.sourceExt.c_str(), ".iso") == 0;
+    const bool needsCache = next.dvdAudio || static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled) || _stricmp(next.sourceExt.c_str(), ".iso") == 0;
     if (!needsCache) {
         std::lock_guard<std::mutex> g(m_prefetchMutex);
         if (m_prefetchActiveCount == 0) {
@@ -1959,7 +2094,8 @@ void SacdDlnaServer::prefetchNextTrack(uint32_t itemId) {
                 bool ok = false;
                 try {
                     std::wstring path; DsdTrack track = next.track;
-                    if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled)) ok = ensureProcessedDsf(next, path, track, *aborter, false);
+                    if (next.dvdAudio) ok = ensureCachedFlac(next, path, track, *aborter, false);
+                    else if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled)) ok = ensureProcessedDsf(next, path, track, *aborter, false);
                     else if (_stricmp(next.sourceExt.c_str(), ".iso") == 0) ok = ensureCached(next, path, track, *aborter, false);
                     else ok = true;
                     networkLog(std::string("next-track prefetch ") + (ok ? "ready: " : "failed: ") + next.track.title);
@@ -1999,27 +2135,21 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
     bool found = false;
     {
         std::lock_guard<std::mutex> g(m_mutex);
-        for (const auto& x : m_items) if (x.id == itemId) { item = x; found = true; break; }
+        const auto it = m_itemIndex.find(itemId);   // O(1); this used to scan the whole library on every media request
+        if (it != m_itemIndex.end() && it->second < m_items.size()) { item = m_items[it->second]; found = true; }
     }
     if (!found || !item.handle.is_valid()) return false;
 
     const bool isHead = requestLine.rfind("HEAD ", 0) == 0;
-    if (!isHead) {
-        std::lock_guard<std::mutex> g(m_rateMutex);
-        if (m_activeStreams >= kMaxConcurrentStreams) {
-            const std::string hdr503 = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-            sendAll(s, hdr503.data(), hdr503.size(), &aborter);
-            networkLog("stream rejected: maximum concurrent streams reached");
-            return true;
-        }
-    }
 
     std::wstring path;
     std::string ext;
     DsdTrack track = item.track;
     const bool dspEnabledForItem = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled);
     const bool isoItem = _stricmp(item.sourceExt.c_str(), ".iso") == 0;
-    if (dspEnabledForItem || isoItem) {
+    if (item.dvdAudio) {
+        setPreparingTrack(item, "FLAC", "DVD-Audio -> foobar2000 decoder -> FLAC/PCM -> DLNA", "DVD-A DECODE / CACHE");
+    } else if (dspEnabledForItem || isoItem) {
         const std::string prepPipeline = dspEnabledForItem
             ? "PCM/DSD source -> DSD Processor -> DSF/DSD -> DLNA"
             : "SACD ISO -> foo_input_sacd -> DSF/DSD -> DLNA";
@@ -2029,7 +2159,10 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
         setPreparingTrack(item, item.sourceExt.empty() ? "UNKNOWN" : item.sourceExt.substr(1),
                           "Native DSD -> DLNA (no conversion)", "NO CONVERSION");
     }
-    if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled)) {
+    if (item.dvdAudio) {
+        if (!ensureCachedFlac(item, path, track, aborter)) return false;
+        ext = ".flac";
+    } else if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled)) {
         if (!ensureProcessedDsf(item, path, track, aborter)) return false;
         ext = ".dsf";
     } else if (_stricmp(item.sourceExt.c_str(), ".iso") == 0) {
@@ -2063,6 +2196,34 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
     const uint64_t length = size ? end - begin + 1 : 0;
     f.seekg(static_cast<std::streamoff>(begin));
 
+    // Stream slot: taken atomically at the moment audio is about to be sent, i.e. AFTER any SACD/DSP
+    // conversion, and released on every return path. A request that is only waiting for a conversion (for
+    // example one abandoned when the user skipped tracks) therefore never holds a slot, while a request over
+    // the limit is still answered 503 BEFORE any 200/206 header. The converted file stays cached, so the
+    // renderer's retry starts at once. The limit is the "Max streams" preference, re-read on every request:
+    // changes apply immediately and streams already running are never cut.
+    struct StreamSlot {
+        SacdDlnaServer* server;
+        std::string ip;
+        bool held = false;
+        ~StreamSlot() {
+            if (!held) return;
+            server->m_clientRegistry.streamEnded(ip, clientreg::Clock::now());
+            server->m_streamLimiter.release();
+        }
+    } slot{ this, peerIp };
+    if (!isHead) {
+        const uint32_t limit = sacd_dlna_max_streams();
+        if (!m_streamLimiter.tryAcquire(limit)) {
+            const std::string hdr503 = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            sendAll(s, hdr503.data(), hdr503.size(), &aborter);
+            networkLog("stream rejected: limit of " + std::to_string(limit) + " concurrent stream(s) reached (" + peerIp + ")");
+            return true;
+        }
+        slot.held = true;
+        if (isClientPeer(peerIp)) m_clientRegistry.streamStarted(peerIp, clientreg::Clock::now());
+    }
+
     const std::string mime = chooseRendererMime(mimeForExtension(ext));
     std::string hdr = partial ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n";
     hdr += "Content-Type: " + mime + "\r\nContent-Length: " + std::to_string(length) + "\r\nAccept-Ranges: bytes\r\n";
@@ -2084,14 +2245,18 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
     std::string outputFormat = ext.empty() ? "UNKNOWN" : ext.substr(1);
     std::transform(outputFormat.begin(), outputFormat.end(), outputFormat.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     const bool dspEnabled = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled);
-    const std::string pipeline = dspEnabled
-        ? "PCM/DSD source -> DSD Processor -> DSF/DSD -> DLNA"
-        : (_stricmp(item.sourceExt.c_str(), ".iso") == 0
-            ? "SACD ISO -> foo_input_sacd -> DSF/DSD -> DLNA"
-            : "Native DSD -> DLNA (no conversion)");
-    const std::string conversion = dspEnabled
-        ? "DSP OUTPUT / CACHED"
-        : (_stricmp(item.sourceExt.c_str(), ".iso") == 0 ? "SACD DECODE / CACHE" : "NO CONVERSION");
+    const std::string pipeline = item.dvdAudio
+        ? "DVD-Audio -> foo_input_dvda -> PCM -> FLAC -> DLNA"
+        : (dspEnabled
+            ? "PCM/DSD source -> DSD Processor -> DSF/DSD -> DLNA"
+            : (_stricmp(item.sourceExt.c_str(), ".iso") == 0
+                ? "SACD ISO -> foo_input_sacd -> DSF/DSD -> DLNA"
+                : "Native DSD -> DLNA (no conversion)"));
+    const std::string conversion = item.dvdAudio
+        ? "DVD-A DECODE / FLAC CACHE"
+        : (dspEnabled
+            ? "DSP OUTPUT / CACHED"
+            : (_stricmp(item.sourceExt.c_str(), ".iso") == 0 ? "SACD DECODE / CACHE" : "NO CONVERSION"));
     const uint64_t outputSize = fileSizeSafe(path);
     updateStreamStart(peerIp, track, sourceFormat, outputFormat, pipeline, conversion, item.sourceSize, outputSize,
                       item.sourceSampleRate, item.sourceChannels, item.sourceBitsPerSample);
@@ -2161,9 +2326,10 @@ bool SacdDlnaServer::serveAlbumArt(SOCKET s, uint32_t albumId, const std::string
     metadb_handle_ptr handle;
     {
         std::lock_guard<std::mutex> g(m_mutex);
-        for (const auto& album : m_albums) if (album.id == albumId) {
-            for (const auto& item : m_items) if (item.id == album.representativeItemId) { handle = item.handle; break; }
-            break;
+        const auto alb = m_albumIndex.find(albumId);
+        if (alb != m_albumIndex.end() && alb->second < m_albums.size()) {
+            const auto rep = m_itemIndex.find(m_albums[alb->second].representativeItemId);
+            if (rep != m_itemIndex.end() && rep->second < m_items.size()) handle = m_items[rep->second].handle;
         }
     }
     if (!handle.is_valid()) return false;
@@ -2248,6 +2414,7 @@ void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
             m_networkVisibility = "CONFIRMED / REMOTE HTTP";
         }
     }
+    if (isClientPeer(peerIp)) m_clientRegistry.touch(peerIp, headerValueCI(req, "USER-AGENT"), clientreg::Clock::now());
     updateLastHttpRequest(peerIp + " -> " + line);
     networkLog(peerIp + " -> " + line);
 
@@ -2287,7 +2454,22 @@ void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
         if (!st.sdxModelNumber.is_empty()) body += " — modelNumber " + std::string(st.sdxModelNumber.c_str());
         body += "</p><p>Negotiated Sink: <code>" + xmlEscape(st.sdxProtocolInfo.c_str()) + "</code></p>";
         body += "<p>foo_input_sacd: " + std::string(st.sacdInstalled ? "INSTALLED" : "NOT INSTALLED") + " " + st.sacdVersion.c_str() + "</p>";
-        body += "<p>Music Library: " + std::string(st.sharingLibrary ? "SHARING" : "NOT SHARING") + " (" + std::to_string(st.sharedCount) + " DSD tracks)</p>";
+        body += "<p>Music Library: " + std::string(st.sharingLibrary ? "SHARING" : "NOT SHARING") + " (" + std::to_string(st.sharedCount) + " shared tracks)</p>";
+        body += "<p>Clients: <b>" + std::to_string(st.clientsTotal) + " total</b> = " + std::to_string(st.clientsActive) + " active + " + std::to_string(st.clientsIdle) +
+            " idle | seen since start: " + std::to_string(st.clientsSeenSinceStart) +
+            " | streams: <b>" + std::to_string(st.streamSlotsUsed) + " of " + std::to_string(st.streamLimit) + "</b> allowed (rejected: " + std::to_string(st.streamsRejected) + ")</p>";
+        {
+            const auto clients = m_clientRegistry.snapshot(clientreg::Clock::now());
+            if (!clients.empty()) {
+                body += "<table border=\"1\" cellpadding=\"3\" cellspacing=\"0\"><tr><th>Client</th><th>State</th><th>Streams now</th><th>Streams served</th><th>Requests</th><th>Silent for</th><th>User-Agent</th></tr>";
+                for (const auto& c : clients) {
+                    body += "<tr><td>" + xmlEscape(c.ip) + "</td><td>" + std::string(c.active ? "ACTIVE" : "idle") + "</td><td>" + std::to_string(c.activeStreams) +
+                        "</td><td>" + std::to_string(c.streamsServed) + "</td><td>" + std::to_string(c.requests) + "</td><td>" + std::to_string(static_cast<long long>(c.silentFor.count())) +
+                        " s</td><td>" + xmlEscape(c.userAgent) + "</td></tr>";
+                }
+                body += "</table>";
+            }
+        }
         body += "<p>Cache: " + std::to_string(st.cacheHits) + " hits / " + std::to_string(st.cacheMisses) + " misses / " + std::to_string(st.cacheBytes / 1048576.0) + " MB</p>";
         body += "<p>HTTP ready: <b>" + std::string(st.httpReady ? "YES" : "NO") + "</b> | SSDP ready: <b>" + std::string(st.ssdpReady ? "YES" : "NO") + "</b></p>";
         body += "<p>Advertised LOCATION: <code>http://" + xmlEscape(st.localIp.c_str()) + ":" + std::to_string(m_port) + "/device.xml</code></p>";
@@ -2688,6 +2870,7 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
     const auto t0 = std::chrono::steady_clock::now();
     const bool dspEnabled = static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled);
     const bool dspInstalled = !dspEnabled || DsdProcessorBridge::installed();   // evaluated once, not per track
+    const std::unordered_set<std::string> sharedFormats = parseSharedFormats(std::string(sacd_dlna_cfg::shared_formats.get()));   // parsed once, not per track
 
     std::vector<Item> newItems; newItems.reserve(items.get_count());
     std::vector<libindex::Track> indexTracks; indexTracks.reserve(items.get_count());   // parallel to newItems
@@ -2695,18 +2878,20 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
         const auto& handle = items[i]; const char* path = handle->get_path(); if (!path || !*path) continue;
         const char* ext = strrchr(path, '.'); if (!ext) continue;
         const std::string normalizedExt = lowerCopy(ext);
+        const bool isDvdCandidate = normalizedExt == ".iso" || normalizedExt == ".aob" || normalizedExt == ".ifo" || normalizedExt == ".mlp" || normalizedExt == ".thd" || normalizedExt == ".truehd";
+        const bool isDvdAudio = isDvdCandidate && isDvdAudioInput(path);
         const bool isDsd = normalizedExt == ".iso" || normalizedExt == ".dsf" || normalizedExt == ".dff";
-        const bool isSharedFormat = formatAllowed(normalizedExt);
+        const bool isSharedFormat = sharedFormats.count(normalizedExt) != 0;
         if (!isSharedFormat) continue;
-        if (isDsd) {
+        if (isDsd && !isDvdAudio) {
             // SACD ISO is indexed as DSD content and is advertised as the generated
             // DSF resource; the ISO container itself is never sent to the renderer.
         } else if (dspEnabled) {
             // Non-DSD formats may be sent natively or passed through DSD Processor,
             // depending on the configured DSP mode. They are still selectable by filter.
         }
-        if (!dspInstalled && !isDsd) continue;
-        Item x; x.id = m_nextId++; x.sourcePath = path; x.sourceExt = lowerCopy(ext); x.subsong = handle->get_subsong_index(); x.handle = handle;
+        if (!dspInstalled && !isDsd && !isDvdAudio) continue;
+        Item x; x.id = m_nextId++; x.sourcePath = path; x.sourceExt = lowerCopy(ext); x.subsong = handle->get_subsong_index(); x.dvdAudio = isDvdAudio; x.handle = handle;
 
         // File size and timestamp come from foobar2000's metadb cache, so indexing a
         // library does not stat thousands of files (this runs on the main thread).
@@ -2779,6 +2964,10 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
     std::vector<Playlist> newPlaylists;
     const auto playlistCount = playlist_manager::get()->get_playlist_count();
     newPlaylists.reserve(playlistCount);
+    // Path (ASCII-lower-cased) -> positions in newItems, for the playlist matching below.
+    std::unordered_map<std::string, std::vector<size_t>> itemsByPath;
+    itemsByPath.reserve(newItems.size());
+    for (size_t k = 0; k < newItems.size(); ++k) itemsByPath[lowerCopy(newItems[k].sourcePath)].push_back(k);
     for (t_size pi = 0; pi < playlistCount; ++pi) {
         metadb_handle_list playlistItems;
         playlist_manager::get()->playlist_get_all_items(pi, playlistItems);
@@ -2804,20 +2993,24 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
             if (!ppath || !*ppath) continue;
             const t_uint32 psub = ph->get_subsong_index();
 
+            // Only items sharing this path can match, so look them up in the path index instead of
+            // scanning the whole library (the previous code did up to three full scans, each with a
+            // Unicode-aware path_compare, for EVERY playlist entry, on the main thread).
+            // path_compare() below still decides every match; the index only narrows the search.
+            const auto candidatesIt = itemsByPath.find(lowerCopy(ppath));
+            if (candidatesIt == itemsByPath.end()) continue;   // not a shared file (e.g. its format is filtered out)
+            const std::vector<size_t>& candidates = candidatesIt->second;
             const Item* match = nullptr;
 
             // 1) Exact playable location: path + subsong.
-            for (const auto& item : newItems) {
-                if (item.subsong == psub &&
-                    metadb::path_compare(item.sourcePath.c_str(), ppath) == 0) {
-                    match = &item;
-                    break;
-                }
+            for (const size_t ci : candidates) {
+                const Item& item = newItems[ci];
+                if (item.subsong == psub && metadb::path_compare(item.sourcePath.c_str(), ppath) == 0) { match = &item; break; }
             }
 
-            // 2) Same path and same title/track number.  This handles cases where
-            // a playlist provider recreates a handle with a different subsong index
-            // while retaining the actual SACD track metadata.
+            // 2) Same path and same title/track number. This handles cases where a playlist
+            // provider recreates a handle with a different subsong index while retaining the
+            // actual SACD track metadata.
             if (!match) {
                 pfc::string8 pTitle, pTrackNo;
                 metadb_info_container::ptr pref;
@@ -2829,7 +3022,8 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
                     if (n) pTrackNo = n;
                 }
                 if (!pTitle.is_empty() || !pTrackNo.is_empty()) {
-                    for (const auto& item : newItems) {
+                    for (const size_t ci : candidates) {
+                        const Item& item = newItems[ci];
                         if (metadb::path_compare(item.sourcePath.c_str(), ppath) != 0) continue;
                         const bool titleOK = pTitle.is_empty() ||
                             stricmp_utf8(item.track.title.c_str(), pTitle.c_str()) == 0;
@@ -2840,17 +3034,11 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
                 }
             }
 
-            // 3) Last safe fallback: if the path exists only once in the shared
-            // library, use that item even if the playlist subsong metadata is stale.
-            if (!match) {
-                const Item* only = nullptr;
-                bool multiple = false;
-                for (const auto& item : newItems) {
-                    if (metadb::path_compare(item.sourcePath.c_str(), ppath) != 0) continue;
-                    if (only) { multiple = true; break; }
-                    only = &item;
-                }
-                if (only && !multiple) match = only;
+            // 3) Last safe fallback: if the path exists only once in the shared library, use that
+            // item even if the playlist subsong metadata is stale.
+            if (!match && candidates.size() == 1) {
+                const Item& only = newItems[candidates[0]];
+                if (metadb::path_compare(only.sourcePath.c_str(), ppath) == 0) match = &only;
             }
 
             if (match) pl.itemIds.push_back(match->id);
@@ -2882,8 +3070,10 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
 
 void SacdDlnaServer::share_music_library() {
     m_libraryRefreshPending = false;
-    if (!sacd_plugin_installed()) {
-        popup_message::g_show("The Super Audio CD Decoder (foo_input_sacd.dll) is required before the DSD Music Library can be shared.", "SACD DLNA");
+    // DVD-Audio is decoded by foo_input_dvda; SACD still uses foo_input_sacd.
+    // Sharing is allowed when either decoder is installed.
+    if (!sacd_plugin_installed() && !dvda_plugin_installed()) {
+        popup_message::g_show("Install foo_input_sacd or DVD-Audio Decoder (foo_input_dvda) before sharing the Music Library.", "SACD DLNA");
         return;
     }
     if (!library_manager::get()->is_library_enabled()) {
@@ -2893,13 +3083,15 @@ void SacdDlnaServer::share_music_library() {
     }
     pfc::list_t<metadb_handle_ptr> all; library_manager::get()->get_all_items(all);
     metadb_handle_list dsd;
+    const std::unordered_set<std::string> sharedFormats = parseSharedFormats(std::string(sacd_dlna_cfg::shared_formats.get()));   // parsed once, not per track
     for (size_t i = 0; i < all.get_count(); ++i) {
         const char* path = all[i]->get_path(); if (!path) continue; const char* ext = strrchr(path, '.'); if (!ext) continue;
         const std::string normalizedExt = lowerCopy(ext);
-        if (formatAllowed(normalizedExt)) dsd += all[i];
+        if (sharedFormats.count(normalizedExt) != 0) dsd += all[i];
     }
     publish(dsd); m_sharingLibrary = true;
-    console::printf("SACD DLNA: Music Library SHARING / %u DSD tracks", static_cast<unsigned>(m_sharedCount.load()));
+    console::printf("SACD DLNA: Music Library SHARING / %u track(s) (per Shared formats filter: %s)",
+        static_cast<unsigned>(m_sharedCount.load()), sacd_dlna_cfg::shared_formats.get().c_str());
 }
 
 void SacdDlnaServer::request_library_refresh() {

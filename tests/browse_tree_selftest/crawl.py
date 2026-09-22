@@ -27,9 +27,9 @@ def paged(oid, size):
 
 # ---------- raiz
 root = full('0')
-check([k['title'] for k in root] == ['Artists','Albums','Genres','Folders','All Tracks'], f"raiz: {[k['title'] for k in root]}")
+check([k['title'] for k in root] == ['Artists','Albums','Genres','Folders','All Tracks','Playlists'], f"raiz: {[k['title'] for k in root]}")
 check(all(k['kind'] == 'container' and k['parent'] == '0' for k in root), "filhos da raiz sao containers com parentID=0")
-m = browse('0', 'meta')[2]; check(len(m) == 1 and m[0]['childCount'] == '5' and m[0]['parent'] == '-1', "metadata da raiz")
+m = browse('0', 'meta')[2]; check(len(m) == 1 and m[0]['childCount'] == '6' and m[0]['parent'] == '-1', "metadata da raiz")
 
 # ---------- percorrer tudo
 tracks_via = {}
@@ -75,6 +75,14 @@ md = browse(music[1]['id'], 'meta')[2][0]; check(md['parent'] == dkids[0]['id'],
 md = browse(folders[0]['id'], 'meta')[2][0]; check(md['parent'] == 'folders', "parentID de pasta de topo e 'folders'")
 tr = next(k for k in full('artist-1' if False else full('artists')[0]['id']))       # 1.o album do 1.o artista
 alltr = full('alltracks'); t1 = [k['title'] for k in alltr]; check(t1 == sorted(t1, key=str.lower), "All Tracks ordenadas por titulo")
+
+# ---------- playlists
+pls = full('playlists'); check([p['title'] for p in pls] == ['Favourites & <Best>', 'Empty'], f"playlists: {[p['title'] for p in pls]}")
+check(pls[0]['childCount'] == '30' and pls[1]['childCount'] == '0', "childCount das playlists")
+fav = full(pls[0]['id']); check(len(fav) == 30 and all(k['kind'] == 'item' and k['parent'] == pls[0]['id'] for k in fav), "faixas da playlist")
+check(full(pls[1]['id']) == [], "playlist vazia devolve 0 filhos")
+md = browse(pls[0]['id'], 'meta')[2][0]; check(md['parent'] == 'playlists' and md['title'] == 'Favourites & <Best>', "metadata de playlist (titulo escapado)")
+check(set(k['id'] for k in fav) <= allids, "as faixas da playlist existem em All Tracks")
 
 # ---------- paginacao: casos limite
 nr, tm, k = browse('alltracks', 'children', 5, 0xFFFFFFFF); check(tm == 2406 and nr == 2401, f"RequestedCount=0xFFFFFFFF: {nr}/{tm}")

@@ -1,4 +1,49 @@
-# Alpha 3 T — bug-fix and performance pass (proposed)
+# Alpha 3 V — client counters, stream limit, performance
+
+Applied on top of Alpha 3 U. Not compiled here (no MSVC); the new logic was tested outside Windows (see **Tests**).
+
+**New**
+- **Status: clients.** The live status (status UI element, Preferences page and the `/status` web page) shows `total`, `active` and `idle` clients plus clients seen since start. `total = active + idle`. A client is a remote peer IP that sent HTTP requests; the built-in self-test (loopback / this machine) is not counted. `active` = is being sent audio right now; `idle` = known, not streaming, forgotten after 10 minutes of silence. `/status` also lists every client with its state, streams served, requests, silence and `User-Agent`.
+- **Max streams option** (Preferences, next to HTTP port; 1-16, default 2). The slot is taken atomically when audio is about to be sent, after any SACD/DSP conversion, and released on every exit path (the old check compared a counter that only moved later, so several simultaneous requests all passed). Requests that are merely waiting for a conversion, for example ones abandoned when the user skips tracks, never hold a slot. It is re-read on every request: changes apply immediately, running streams are never cut. Requests over the limit get `503` + `Retry-After`, are counted (`rejected` in the status) and logged.
+
+**Performance**
+- Playlist matching in `publish()` used up to three full scans of the shared library, each with a Unicode-aware `path_compare`, for every playlist entry, on the main thread. It now looks candidates up in a path index and still lets `path_compare` decide (verified identical on 160,000 randomised matches).
+- The `Shared formats` filter was re-parsed (two string copies + tokenising) for every track; it is now parsed once per `publish()` / `share_music_library()` (identical result on 419,000 comparisons, except that an empty extension is no longer shared because of a stray comma). Tabs and newlines also separate formats now.
+- Media, artwork and prefetch lookups by id used linear scans of the whole library; they use the existing hash indexes (`m_itemIndex`, `m_albumIndex`).
+
+**Fixed**
+- The Preferences dialog had "Enable stability mode" drawn on top of the shared-formats hint text; it now sits inside its group box. The dialog grew by 15 dialog units to make room for the new rows.
+- `/status` said "DSD tracks" for the shared count although other formats can be shared.
+
+**Tests**
+- `tests/client_registry_selftest/`: 53 checks on the client registry and the stream limiter, including 16 threads contending for limits 1/2/3/8 (the number of simultaneous streams never exceeded the limit); also run clean under ThreadSanitizer.
+- `tests/shared_formats_selftest/`: unit test of the real `parseSharedFormats()`.
+- `tests/browse_tree_selftest/` updated for playlists (16,000+ checks); it had stopped compiling after the Playlists change.
+
+**Notes**
+- The zip drops Unix execute bits: run the tests with `sh tests/<name>/run.sh`.
+- Version strings (`VERSION`, `kVersion`, `main.cpp`) were already inconsistent and were left alone.
+
+# Alpha 3 U — external code review (bug fixes + documentation)
+
+Requested: search for bugs, optimize, update documentation. Reviewed by an AI assistant with no local Windows/MSVC toolchain (same constraint as every other change in this history) — findings below are from static reading only, not a compiled/run test.
+
+**Investigated, found already correct (no change needed)**
+- SACD ISO is already advertised to renderers purely as DSD/`.dsf` (`<dc:format>audio/dsd</dc:format>`, `servedExt` forced to `.dsf`); the raw `.iso` container is never sent. This was already right.
+- Sharing non-DSD formats already works end-to-end: the `Shared formats` preferences field (`shared_formats` config, default `dsf,dff,iso`) already gates `publish()`/`share_music_library()`, is already documented via a dialog hint string and a `m_tips.add(...)` tooltip, and `serveMedia()` already streams non-DSD, non-cached files natively (no DSD Processor required) via `nativePathFromFb2k`. What was actually missing was documentation outside the dialog itself — see below.
+
+**Fixed**
+- `updateStreamStart()`/`updateStreamEnd()`: with more than one concurrent HTTP stream (the server already supports up to `kMaxConcurrentStreams`), the "now playing" Status fields (`m_streamTitle`, `m_clientIp`, etc.) were overwritten on *every* stream start, not just the first — so with 2+ simultaneous clients the Status popup would flicker to whichever client connected most recently, and could show stale info once that client disconnected while an earlier stream was still running. Now these fields are only set on the 0→1 transition, so Status consistently reflects the longest-running active stream instead of flickering. A true per-connection breakdown is still future work.
+- `share_music_library()`'s console log always said "N DSD tracks", which becomes inaccurate once `Shared formats` includes non-DSD extensions. Now logs the actual count together with the active filter string.
+
+**Documentation**
+- `PREFERENCES_FIELDS.md`: added the missing `Shared formats` row (existed in the dialog and its tooltip, but not in this reference table).
+- `EXAMPLES.md`: added "8. Sharing non-DSD formats (FLAC, WAV, MP3, ...)" with the exact steps and what happens with/without DSD Processor.
+
+**Not changed**
+- No further concurrency/architecture audit was done beyond the item above (`dlna_server.cpp` is ~2500 lines); treat this as a partial pass, not a full audit. None of this has been compiled or run.
+
+
 
 Applied on top of Alpha 3 S. See `CODE_AUDIT_0.8_ALPHA3_T.md`.
 

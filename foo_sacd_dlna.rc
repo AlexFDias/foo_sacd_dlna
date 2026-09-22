@@ -2,47 +2,89 @@
 #include "winres.h"
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
-IDD_SACD_DLNA_PREFERENCES DIALOGEX 0, 0, 390, 470
-STYLE DS_SETFONT | WS_CHILD
+IDD_SACD_DLNA_PREFERENCES DIALOGEX 0, 0, 390, 180
+STYLE DS_SETFONT | WS_CHILD | DS_CONTROL
+EXSTYLE WS_EX_CONTROLPARENT
 FONT 9, "Segoe UI", 400, 0, 0x0
 BEGIN
-    LTEXT           "foo_sacd_dlna", IDC_STATIC, 12, 10, 120, 12
-    LTEXT           "Native DSD over UPnP / DLNA", IDC_STATIC, 12, 26, 240, 10
+    LTEXT           "foo_sacd_dlna", IDC_STATIC, 12, 12, 120, 12
+    LTEXT           "DLNA server for native DSD / DVD-Audio FLAC streaming.", IDC_STATIC, 12, 29, 350, 10
+    GROUPBOX        "Current status", IDC_STATIC, 10, 50, 370, 75
+    LTEXT           "Current: DLNA STOPPED | clients 0 | streams 0/2", IDC_STATUS_SUMMARY, 20, 73, 350, 28
+    LTEXT           "Use Status, Settings and Maintenance for the component controls.", IDC_STATIC, 20, 101, 345, 18
+END
 
-    GROUPBOX        "Live status", IDC_STATIC, 10, 45, 370, 135
-    LTEXT           "DLNA: STOPPED", IDC_STATUS_DLNA, 20, 59, 350, 10
-    LTEXT           "foo_input_sacd: NOT INSTALLED", IDC_STATUS_SACD, 20, 74, 350, 10
-    LTEXT           "Music Library: NOT SHARING (0 DSD tracks)", IDC_STATUS_LIBRARY, 20, 89, 350, 10
-    LTEXT           "Audio stream: IDLE", IDC_STATUS_STREAM, 20, 104, 350, 10
-    LTEXT           "T+A SDX: NOT DETECTED", IDC_STATUS_SDX, 20, 119, 350, 10
-    LTEXT           "DSD read-ahead: IDLE", IDC_STATUS_BUFFER, 20, 134, 350, 10
-    LTEXT           "DSD Processor: NOT INSTALLED", IDC_STATUS_DSP, 20, 149, 350, 10
-    LTEXT           "Network: NO EXTERNAL TRAFFIC SEEN", IDC_STATUS_NETWORK, 20, 164, 350, 10
+// All child preference pages: 125 x 285 dialog units.
+// The controls are deliberately compact so the complete page fits without
+// artificial scrollbars or resizing the foobar2000 Preferences host.
+IDD_SACD_DLNA_TEST DIALOGEX 0, 0, 450, 400
+STYLE DS_SETFONT | WS_CHILD | DS_CONTROL
+EXSTYLE WS_EX_CONTROLPARENT
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    // One full-width column: the live text foo_sacd_dlna.cpp writes into these
+    // fields (see update_status() in preferences.cpp) runs 30-90 characters,
+    // which the previous two-column, 105-unit-wide layout clipped.
+    GROUPBOX        "Status", IDC_STATIC, 10, 8, 430, 212
+    LTEXT           "DLNA: STOPPED", IDC_STATUS_DLNA, 20, 26, 410, 14
+    LTEXT           "foo_input_sacd: -- | DVD-Audio: --", IDC_STATUS_SACD, 20, 46, 410, 14
+    LTEXT           "Music Library: --", IDC_STATUS_LIBRARY, 20, 66, 410, 14
+    LTEXT           "Audio stream: IDLE", IDC_STATUS_STREAM, 20, 86, 410, 14
+    LTEXT           "T+A SDX: --", IDC_STATUS_SDX, 20, 106, 410, 14
+    LTEXT           "DSD read-ahead: --", IDC_STATUS_BUFFER, 20, 126, 410, 14
+    LTEXT           "DSD Processor: --", IDC_STATUS_DSP, 20, 146, 410, 14
+    LTEXT           "Network: --", IDC_STATUS_NETWORK, 20, 166, 410, 14
+    LTEXT           "Clients: --", IDC_STATUS_CLIENTS, 20, 186, 410, 14
+END
 
-    AUTOCHECKBOX    "Enable DLNA broadcasting", IDC_ENABLE, 14, 188, 190, 14
-    AUTOCHECKBOX    "Share DSD content from foobar2000 Music Library", IDC_SHARE_LIBRARY, 14, 206, 300, 14
+IDD_SACD_DLNA_SETTINGS DIALOGEX 0, 0, 450, 400
+STYLE DS_SETFONT | WS_CHILD | DS_CONTROL
+EXSTYLE WS_EX_CONTROLPARENT
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    GROUPBOX        "Server", IDC_STATIC, 10, 8, 430, 112
+    AUTOCHECKBOX    "Enable DLNA", IDC_ENABLE, 20, 26, 140, 14
+    AUTOCHECKBOX    "Share Music Library", IDC_SHARE_LIBRARY, 180, 26, 180, 14
+    LTEXT           "Server name", IDC_STATIC, 20, 48, 120, 10
+    EDITTEXT        IDC_SERVER_NAME, 20, 60, 140, 14, ES_AUTOHSCROLL
+    LTEXT           "HTTP port", IDC_STATIC, 175, 48, 60, 10
+    EDITTEXT        IDC_PORT, 175, 60, 55, 14, ES_NUMBER
+    LTEXT           "Max streams", IDC_STATIC, 245, 48, 70, 10
+    EDITTEXT        IDC_MAX_STREAMS, 245, 60, 55, 14, ES_NUMBER
+    LTEXT           "Shared formats", IDC_STATIC, 20, 82, 120, 10
+    EDITTEXT        IDC_SHARED_FORMATS, 20, 94, 400, 14, ES_AUTOHSCROLL
 
-    LTEXT           "Server name:", IDC_STATIC, 14, 233, 80, 10
-    EDITTEXT        IDC_SERVER_NAME, 100, 230, 265, 14, ES_AUTOHSCROLL
-    LTEXT           "HTTP port:", IDC_STATIC, 14, 254, 80, 10
-    EDITTEXT        IDC_PORT, 100, 251, 70, 14, ES_NUMBER
-    LTEXT           "Shared formats:", IDC_STATIC, 14, 273, 80, 10
-    EDITTEXT        IDC_SHARED_FORMATS, 100, 270, 265, 14, ES_AUTOHSCROLL
-    LTEXT           "e.g. dsf,dff,iso,flac,wav,mp3", IDC_STATIC, 100, 286, 265, 10
+    GROUPBOX        "Streaming", IDC_STATIC, 10, 128, 430, 70
+    AUTOCHECKBOX    "Stability mode", IDC_STABILITY_MODE, 20, 146, 120, 14
+    LTEXT           "Pre-buffer (seconds)", IDC_STATIC, 160, 148, 110, 10
+    EDITTEXT        IDC_PREBUFFER_SECONDS, 275, 145, 45, 14, ES_NUMBER
+    AUTOCHECKBOX    "Use DSD Processor", IDC_DSP_PROCESSOR, 20, 170, 160, 14
+    // "Configure DSP" used to also live here as a cramped, unlabelled-looking
+    // 40x12 button duplicating the Maintenance page's full button on the same
+    // control ID; removed rather than kept as a second, redundant launcher.
+    LTEXT           "Configure the DSD Processor from the Maintenance page.", IDC_STATIC, 190, 172, 240, 20
+END
 
-    GROUPBOX        "Stability / diagnostics", IDC_STATIC, 10, 300, 370, 66
-    AUTOCHECKBOX    "Enable stability mode", IDC_STABILITY_MODE, 18, 289, 150, 14
-    LTEXT           "Pre-buffer (seconds):", IDC_STATIC, 185, 316, 100, 10
-    EDITTEXT        IDC_PREBUFFER_SECONDS, 288, 313, 55, 14, ES_NUMBER
-    AUTOCHECKBOX    "Verbose network logging", IDC_NETWORK_LOGGING, 18, 334, 170, 14
-    AUTOCHECKBOX    "Enable debug diagnostics", IDC_DEBUG_DIAGNOSTICS, 18, 352, 170, 14
-    PUSHBUTTON      "Run Network Probe", IDC_NETWORK_PROBE, 205, 350, 105, 16
+IDD_SACD_DLNA_OTHER DIALOGEX 0, 0, 450, 400
+STYLE DS_SETFONT | WS_CHILD | DS_CONTROL
+EXSTYLE WS_EX_CONTROLPARENT
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    GROUPBOX        "Diagnostics", IDC_STATIC, 10, 8, 430, 74
+    AUTOCHECKBOX    "Network logging", IDC_NETWORK_LOGGING, 20, 26, 140, 14
+    AUTOCHECKBOX    "Debug diagnostics", IDC_DEBUG_DIAGNOSTICS, 180, 26, 150, 14
+    PUSHBUTTON      "Network Probe", IDC_NETWORK_PROBE, 20, 48, 120, 16
+    LTEXT           "Probe: not run", IDC_STATUS_PROBE, 150, 50, 280, 14
 
-    PUSHBUTTON      "Refresh Library", IDC_REFRESH_LIBRARY, 14, 373, 82, 16
-    PUSHBUTTON      "Open Music Library", IDC_OPEN_LIBRARY, 100, 373, 100, 16
-    PUSHBUTTON      "Clear Shared Library", IDC_CLEAR_LIBRARY, 206, 373, 88, 16
-    PUSHBUTTON      "Clear DSF Cache", IDC_CLEAR_CACHE, 14, 397, 100, 16
-    AUTOCHECKBOX    "Process DLNA audio through DSD Processor", IDC_DSP_PROCESSOR, 14, 419, 235, 14
-    PUSHBUTTON      "Configure DSD Processor...", IDC_DSP_CONFIGURE, 252, 417, 113, 18
-    PUSHBUTTON      "Help", IDC_SACD_HELP, 318, 445, 45, 16
+    GROUPBOX        "Library / Cache", IDC_STATIC, 10, 92, 430, 80
+    PUSHBUTTON      "Refresh Library", IDC_REFRESH_LIBRARY, 20, 110, 135, 18
+    PUSHBUTTON      "Open Music Library", IDC_OPEN_LIBRARY, 165, 110, 135, 18
+    PUSHBUTTON      "Clear Shared Library", IDC_CLEAR_LIBRARY, 20, 134, 135, 18
+    PUSHBUTTON      "Clear DSF Cache", IDC_CLEAR_CACHE, 165, 134, 135, 18
+
+    GROUPBOX        "DSD Processor", IDC_STATIC, 10, 182, 430, 55
+    PUSHBUTTON      "Configure DSP", IDC_DSP_CONFIGURE, 20, 200, 150, 20
+    LTEXT           "Requires foo_dsd_processor to be installed.", IDC_STATIC, 180, 203, 250, 20
+
+    PUSHBUTTON      "Help", IDC_SACD_HELP, 370, 360, 70, 20
 END

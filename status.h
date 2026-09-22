@@ -13,6 +13,7 @@ struct SacdDlnaStatus {
     bool remoteHttpSeen = false;
     bool remoteSsdpSeen = false;
     bool sacdInstalled = false;
+    bool dvdaInstalled = false;
     bool sharingLibrary = false;
     bool streamingActive = false;
     bool sdxDetected = false;
@@ -25,6 +26,14 @@ struct SacdDlnaStatus {
     bool dsdProcessorEnabled = false;
     size_t sharedCount = 0;
     uint32_t activeStreams = 0;
+    // Clients = distinct remote peers that sent HTTP requests (see client_registry.h). total = active + idle.
+    uint32_t clientsTotal = 0;
+    uint32_t clientsActive = 0;          // being sent audio right now
+    uint32_t clientsIdle = 0;            // known, not streaming
+    uint32_t clientsSeenSinceStart = 0;  // distinct clients since the server was started
+    uint32_t streamLimit = 2;            // user option: maximum simultaneous audio streams
+    uint32_t streamSlotsUsed = 0;        // streams accepted and not finished yet
+    uint32_t streamsRejected = 0;        // requests answered 503 because the limit was reached
     uint16_t port = 8192;
     uint64_t bytesPerSecond = 0;
     uint64_t totalBytesSent = 0;

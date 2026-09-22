@@ -43,6 +43,7 @@
     <ResourceCompile Include="foo_sacd_dlna.rc" />
     <ClCompile Include="sacd_decode.cpp" />
     <ClCompile Include="dsf_writer.cpp" />
+    <ClCompile Include="dvd_audio_flac.cpp" />
     <ClCompile Include="dlna_server.cpp" />
     <ClCompile Include="config.cpp" />
     <ClCompile Include="dsp_bridge.cpp" />
@@ -51,6 +52,7 @@
     <ClInclude Include="config.h" />
     <ClInclude Include="status.h" />
     <ClInclude Include="library_index.h" />
+    <ClInclude Include="client_registry.h" />
     <ClInclude Include="resource.h" /><ClInclude Include="tooltips.h" /></ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\libPPUI\libPPUI.vcxproj"><Project>{7729EB82-4069-4414-964B-AD399091A03F}</Project></ProjectReference>

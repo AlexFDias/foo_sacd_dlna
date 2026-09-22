@@ -23,6 +23,15 @@
 #define IDC_STATUS_DSP              2021
 #define IDC_DEBUG_DIAGNOSTICS       2022
 #define IDC_NETWORK_PROBE           2023
-#define IDC_STATUS_NETWORK          2024
-
+#define IDC_STATUS_PROBE            2024
 #define IDC_SHARED_FORMATS         2025
+#define IDC_STATUS_CLIENTS         2026
+#define IDC_MAX_STREAMS            2027
+#undef IDC_STATUS_NETWORK
+#define IDC_STATUS_NETWORK          2030
+#define IDC_STATUS_SUMMARY         2034
+#define IDD_SACD_DLNA_TEST         202
+#define IDD_SACD_DLNA_SETTINGS     203
+#define IDD_SACD_DLNA_OTHER        204
+#define IDC_CONFIG_CLOSE           2035
+#define IDC_CONFIG_APPLY           2036

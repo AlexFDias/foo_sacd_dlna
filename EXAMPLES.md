@@ -101,6 +101,25 @@ Use an album with two consecutive tracks. Start playback and observe:
 
 Record the result with the exact SDX firmware. Do not treat gapless as guaranteed until this test passes on the target firmware.
 
+## 8. Sharing non-DSD formats (FLAC, WAV, MP3, ...)
+
+DSD content (`.dsf`, `.dff`, SACD `.iso`) is shared by default. To also
+share other formats already in your Media Library:
+
+1. Preferences → SACD DLNA → **Shared formats**, change `dsf,dff,iso` to
+   e.g. `dsf,dff,iso,flac,wav,mp3`.
+2. Apply, then **Refresh library** (or toggle **Share DSD content** off and
+   on) so the new filter takes effect.
+
+With **DSD Processor** off (the default), the newly-added formats are sent
+to the renderer exactly as stored on disk - no conversion, no re-encoding,
+just a normal DLNA file serve with `HTTP Range` support. SACD ISO is the one
+exception: it is always decoded and advertised as `.dsf`/DSD, since the raw
+`.iso` container isn't something a renderer can play directly.
+
+With **DSD Processor** on, non-DSD formats can instead be converted to DSD
+before serving (same pipeline as SACD ISO uses) - see `DSP_PROCESSOR.md`.
+
 ## Build toolchain note
 
 This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
