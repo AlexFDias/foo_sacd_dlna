@@ -190,20 +190,47 @@ public:
     sacd_dlna_settings_page(preferences_page_callback::ptr callback) : m_callback(callback) {}
     BEGIN_MSG_MAP_EX(sacd_dlna_settings_page)
         MSG_WM_INITDIALOG(OnInitDialog)
+        COMMAND_HANDLER_EX(IDC_ENABLE, BN_CLICKED, OnAnyChanged)
+        COMMAND_HANDLER_EX(IDC_SHARE_LIBRARY, BN_CLICKED, OnAnyChanged)
+        COMMAND_HANDLER_EX(IDC_SERVER_NAME, EN_CHANGE, OnAnyChanged)
+        COMMAND_HANDLER_EX(IDC_PORT, EN_CHANGE, OnAnyChanged)
+        COMMAND_HANDLER_EX(IDC_MAX_STREAMS, EN_CHANGE, OnAnyChanged)
+        COMMAND_HANDLER_EX(IDC_SHARED_FORMATS, EN_CHANGE, OnAnyChanged)
+        COMMAND_HANDLER_EX(IDC_STABILITY_MODE, BN_CLICKED, OnAnyChanged)
+        COMMAND_HANDLER_EX(IDC_PREBUFFER_SECONDS, EN_CHANGE, OnAnyChanged)
         COMMAND_HANDLER_EX(IDC_DSP_PROCESSOR, BN_CLICKED, OnDspToggle)
     END_MSG_MAP()
-    t_uint32 get_state() override { return preferences_state::resettable | preferences_state::dark_mode_supported; }
-    void reset() override { load_settings(m_hWnd); }
-    void apply() override { save_settings(m_hWnd); }
+    // Without preferences_state::changed here, foobar2000 never learns that anything on this
+    // page was edited: the Preferences dialog's Apply button stays disabled and apply() is
+    // never invoked, no matter what the user ticks or types (this was the actual cause behind
+    // "Share Music Library doesn't stick" - it affected every field on this page, not just that
+    // checkbox).
+    t_uint32 get_state() override {
+        return (m_dirty ? preferences_state::changed : 0) | preferences_state::resettable | preferences_state::dark_mode_supported;
+    }
+    void reset() override { load_settings(m_hWnd); markClean(); }
+    void apply() override { save_settings(m_hWnd); markClean(); }
 private:
     preferences_page_callback::ptr m_callback;
     fb2k::CDarkModeHooks m_dark;
-    BOOL OnInitDialog(CWindow, LPARAM) { m_dark.AddDialogWithControls(*this); load_settings(m_hWnd); return TRUE; }
+    bool m_dirty = false;
+    bool m_loading = false;   // true while load_settings() programmatically fills the controls
+    BOOL OnInitDialog(CWindow, LPARAM) { m_dark.AddDialogWithControls(*this); m_loading = true; load_settings(m_hWnd); m_loading = false; return TRUE; }
+    // SetDlgItemTextA/SetDlgItemInt (used by load_settings()) fire EN_CHANGE on edit controls
+    // exactly like a real keystroke would; m_loading tells the two apart so reset()/OnInitDialog
+    // never mark the page dirty on their own.
+    void markClean() { m_dirty = false; }
+    void OnAnyChanged(UINT, int, CWindow) {
+        if (m_loading || m_dirty) return;
+        m_dirty = true;
+        if (m_callback.is_valid()) m_callback->on_state_changed();
+    }
     void OnDspToggle(UINT, int, CWindow) {
         if (IsDlgButtonChecked(IDC_DSP_PROCESSOR) == BST_CHECKED && !DsdProcessorBridge::installed()) {
             CheckDlgButton(IDC_DSP_PROCESSOR, BST_UNCHECKED);
             popup_message::g_show("Install foo_dsd_processor before enabling DLNA DSP processing.", "SACD DLNA");
         }
+        OnAnyChanged(0, 0, CWindow());
     }
     // Configuring the DSD Processor itself is done from the Maintenance page now;
     // this page previously had its own second "Configure DSP" button on the same
@@ -226,12 +253,17 @@ public:
         COMMAND_HANDLER_EX(IDC_DSP_CONFIGURE, BN_CLICKED, OnConfigureDsp)
         COMMAND_HANDLER_EX(IDC_SACD_HELP, BN_CLICKED, OnHelp)
     END_MSG_MAP()
-    t_uint32 get_state() override { return preferences_state::resettable | preferences_state::dark_mode_supported; }
-    void reset() override { load_other(); }
-    void apply() override { save_other(); }
+    // Same fix as the Settings page: report preferences_state::changed once one of the two
+    // checkboxes here is actually ticked, otherwise Apply never calls save_other().
+    t_uint32 get_state() override {
+        return (m_dirty ? preferences_state::changed : 0) | preferences_state::resettable | preferences_state::dark_mode_supported;
+    }
+    void reset() override { load_other(); markClean(); }
+    void apply() override { save_other(); markClean(); }
 private:
     preferences_page_callback::ptr m_callback;
     fb2k::CDarkModeHooks m_dark;
+    bool m_dirty = false;
     BOOL OnInitDialog(CWindow, LPARAM) { m_dark.AddDialogWithControls(*this); load_other(); return TRUE; }
     void load_other() {
         CheckDlgButton(IDC_NETWORK_LOGGING, sacd_dlna_cfg::network_logging ? BST_CHECKED : BST_UNCHECKED);
@@ -241,7 +273,12 @@ private:
         sacd_dlna_cfg::network_logging = IsDlgButtonChecked(IDC_NETWORK_LOGGING) == BST_CHECKED;
         sacd_dlna_cfg::debug_diagnostics = IsDlgButtonChecked(IDC_DEBUG_DIAGNOSTICS) == BST_CHECKED;
     }
-    void OnChanged(UINT, int, CWindow) {}
+    void markClean() { m_dirty = false; }
+    void OnChanged(UINT, int, CWindow) {
+        if (m_dirty) return;
+        m_dirty = true;
+        if (m_callback.is_valid()) m_callback->on_state_changed();
+    }
     void OnProbe(UINT, int, CWindow) {
         const bool ok = SacdDlnaServer::instance().run_network_diagnostics();
         const auto st = SacdDlnaServer::instance().get_status();
