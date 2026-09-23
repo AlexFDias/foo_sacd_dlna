@@ -1,7 +1,7 @@
 # foo_sacd_dlna — Documentação Consolidada
 
 **Componente:** `foo_sacd_dlna`  
-**Versão da árvore:** `0.8-alpha3-u-dvda-flac`  
+**Versão da árvore:** `0.8-alpha3-u-dvda-flac-libflac`  
 **Estado:** Alpha / desenvolvimento  
 **Plataforma alvo:** foobar2000 x64 / Windows  
 **SDK alvo:** foobar2000 SDK 2025-03-07  
@@ -9,6 +9,12 @@
 
 > Esta documentação consolida o estado da árvore fornecida. Não substitui os registos históricos de build e auditoria; esses continuam no directório raiz.
 
+
+### DVD-Audio → FLAC: encoder oficial
+
+A conversão DVD-Audio foi simplificada para ter **um único writer**: o libFLAC 1.5.x oficial. O encoder FLAC manual foi eliminado para evitar código órfão entre revisões. O componente entrega PCM 24-bit intercalado ao libFLAC, que gera o FLAC nativo e trata STREAMINFO, frames, subframes e CRCs. A validação do cache deixou de assumir o layout interno do writer antigo.
+
+O `cacheVersion` passou para **4**, invalidando automaticamente caches gerados pelo writer manual anterior.
 ## 1. Objectivo
 
 O `foo_sacd_dlna` é um servidor UPnP/DLNA para foobar2000 destinado a disponibilizar música através da rede para leitores compatíveis.
@@ -83,7 +89,7 @@ A partilha de formatos não DSD é nativa: quando não é necessária uma cache 
 - foobar2000 SDK 2025-03-07.
 - Visual Studio 2022 com ferramentas C++ adequadas.
 - MSVC v142 conforme a configuração documentada.
-- Headers WTL disponíveis segundo `WTL_SETUP.md`, `WTL_RELOCATION.md` e `WTL_SDK_INTEGRATION.md`.
+- Headers WTL disponíveis segundo `BUILD.md`, `BUILD.md` e `BUILD.md`.
 
 ### Dependências funcionais
 
@@ -347,7 +353,7 @@ A documentação histórica indica que **Alpha 3 I** foi confirmada pelo respons
 
 As revisões posteriores contêm alterações adicionais. A documentação histórica também regista explicitamente que essas revisões requerem novo rebuild Windows/MSVC v142 antes de serem declaradas build-validated.
 
-Portanto, para esta árvore `0.8-alpha3-u-dvda-flac`, o estado correcto é:
+Portanto, para esta árvore `0.8-alpha3-u-dvda-flac-libflac`, o estado correcto é:
 
 - **código/documentação presentes:** sim;
 - **feature set documentado no código:** sim;
@@ -378,21 +384,30 @@ O código original do projecto é indicado como licenciado sob **MIT**. SDK do f
 
 Consultar `LICENSE.md`/`LICENSE`, `LICENSING.md` e a documentação de cada dependência antes de redistribuir componentes de terceiros.
 
-## 18. Documentação histórica
+## 18. Organização da documentação
 
-Os seguintes ficheiros são registos históricos e continuam a ser úteis para auditoria:
+A documentação antiga específica de cada revisão foi removida para evitar referências contraditórias. O estado actual está consolidado em `docs/`, `BUILD.md`, `CHANGELOG.md` e nos documentos especializados ainda mantidos no directório raiz.
 
-- `CHANGELOG.md`;
-- `BUILD.md`;
-- `BUILD_VALIDATION_*.md`;
-- `CODE_AUDIT_*.md`;
-- `RELEASE_NOTES_*.md`;
-- `RELEASE_CHECKLIST.md`;
-- `NETWORK_*.md`;
-- `WTL_*.md`;
-- `HARDWARE_VALIDATION.md`;
-- `DSP_PROCESSOR.md`;
-- `PREFERENCES_FIELDS.md`;
-- `EXAMPLES.md`.
+Quando existir uma diferença entre histórico e código actual, o código e a documentação consolidada desta árvore são a referência para a revisão actual; o `CHANGELOG.md` serve apenas como histórico de evolução.
 
-A regra para resolver aparentes contradições é: **a documentação consolidada descreve a árvore fornecida; os documentos históricos descrevem estados anteriores da evolução Alpha 3.**
+
+### DVD-Audio cache availability
+
+`ensureCachedFlac()` must not use `dvda_plugin_installed()` as a hard prerequisite for serving or generating a cache. That probe enumerates `componentversion` services; it is diagnostic metadata, not the decoder API. DVD-Audio conversion itself goes through `input_entry::g_open_for_info_read()` / `input_entry::g_open_for_decoding()`. Existing validated caches remain usable when the component probe returns no version.
+### Media HTTP diagnostics v4
+
+The media endpoint distinguishes an unknown media ID (`404`) from a known item whose DVD-Audio/DSF preparation failed (`503`). Network diagnostics record the preparation reason so renderer logs can identify whether the failure is ContentDirectory/media-ID mapping or cache/decoder generation.
+
+
+
+### DVD-Audio: PCM authoritative format
+
+The DVD-Audio FLAC path opens the decoder before configuring libFLAC and uses the first decoded PCM chunk as the authoritative sample-rate/channel layout. This avoids relying exclusively on static `file_info` metadata for DVD-Audio program variants such as downmix and C/LFE tracks. Subsequent chunks must keep the same PCM format; a mismatch is reported as a conversion error.
+
+### v7 Range/stream limiter behavior
+
+A single renderer may use multiple HTTP Range connections during seeking or prefetch. These connections are treated as one logical active stream when they originate from the same already-streaming peer, so the Max Streams limit does not reject a renderer's own seek/prefetch connection with HTTP 503.
+
+## v8 — DVD-Audio decoder priming-chunk fix
+
+DVD-Audio tracks may emit one or more empty/setup PCM decoder runs before the first real block. The FLAC conversion path skips those runs and derives the libFLAC stream format from the first non-empty PCM block; a 64-run guard prevents an infinite loop.

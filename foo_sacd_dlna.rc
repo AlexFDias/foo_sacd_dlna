@@ -14,9 +14,8 @@ BEGIN
     LTEXT           "Use Status, Settings and Maintenance for the component controls.", IDC_STATIC, 20, 101, 345, 18
 END
 
-// All child preference pages: 125 x 285 dialog units.
-// The controls are deliberately compact so the complete page fits without
-// artificial scrollbars or resizing the foobar2000 Preferences host.
+// All child preference pages use 450 x 400 dialog units.
+// The complete pages fit without artificial scrollbars or resizing the foobar2000 Preferences host.
 IDD_SACD_DLNA_TEST DIALOGEX 0, 0, 450, 400
 STYLE DS_SETFONT | WS_CHILD | DS_CONTROL
 EXSTYLE WS_EX_CONTROLPARENT

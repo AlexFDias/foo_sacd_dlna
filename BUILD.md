@@ -4,41 +4,12 @@ Este documento explica, passo a passo, como preparar um PC Windows para **compil
 
 > **Estado do projecto:** Alpha. A **0.8 Alpha 3 I foi confirmada pelo responsável do projecto como compilada com sucesso e a funcionar** em Windows **Debug x64**, com `pfc` em **Debug FB2K x64**, SDK foobar2000 2025-03-07, MSVC v142 e WTL. A Alpha 3 J acrescenta novos pontos do roadmap e necessita de novo rebuild.
 
-## Alpha 3 M — nota de auditoria
+## Estado de build desta árvore
 
-A Alpha 3 M recebeu uma revisão de robustez ao nível do código. **Necessita de novo rebuild Windows/MSVC v142.** A última versão confirmada pelo utilizador como compilada sem erros e a funcionar é a Alpha 3 I.
+Esta árvore é uma revisão Alpha que requer **fresh rebuild** com Windows/MSVC v142. A documentação não afirma que esta revisão exacta foi compilada neste ambiente. A confirmação histórica de builds anteriores permanece no `CHANGELOG.md`, mas não deve ser usada como validação da revisão actual.
 
+O build x64 usa WTL através de `WTL.props`. A localização pode ser fornecida por `WTLIncludeDir`, `WTL_INCLUDE` ou `WTL_ROOT`; não é necessário manter documentação histórica separada para estes overrides.
 
----
-
-## Validação de compilação da 0.8 Alpha 3 E
-
-A compilação desta versão foi concluída com sucesso em Windows **Debug x64**. Não foram reportados erros de compilação nem de linker na solução completa.
-
-Projectos concluídos:
-
-```text
-foobar2000_component_client  OK
-foobar2000_sdk_helpers       OK
-pfc                         OK
-foobar2000_SDK              OK
-libPPUI                     OK
-foo_sacd_dlna               OK
-```
-
-O build foi feito com:
-
-```text
-SDK:       foobar2000 SDK 2025-03-07
-Toolset:   MSVC v142
-Platform:  x64
-Config:    Debug
-WTL:       <SDK root>\<WTL folder>\include
-```
-
-O log de validação deve ser interpretado como uma confirmação da **compilação**. Testes de reprodução, descoberta UPnP/DLNA, transmissão DSD real, gapless e compatibilidade com o firmware específico do SDX continuam a ser testes de runtime.
-
-Consulte [`BUILD_VALIDATION_0.8_ALPHA3_E.md`](BUILD_VALIDATION_0.8_ALPHA3_E.md) e [`BUILD_VALIDATION_0.8_ALPHA3_I.md`](BUILD_VALIDATION_0.8_ALPHA3_I.md).
 
 ## 1. O que é necessário para compilar
 
@@ -865,7 +836,7 @@ An explicit path is also supported:
 .\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude '<SDK root>\<WTL folder>\include'
 ```
 
-See `WTL_SETUP.md`, `WTL_RELOCATION.md` and `V142_WTL_FIX.md` for the complete setup.
+See the WTL section below; `WTL.props` supports `WTLIncludeDir`, `WTL_INCLUDE` and `WTL_ROOT`.
 
 
 ## SDK shared library path

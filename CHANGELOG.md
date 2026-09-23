@@ -1,3 +1,77 @@
+## v8 — DVD-Audio decoder priming-chunk fix
+
+- DVD-Audio conversion now skips empty/format-only PCM decoder runs and uses the first non-empty PCM block to configure libFLAC.
+- This targets the `DVD-Audio decoder returned an empty/invalid PCM chunk` failure seen on multichannel/C-LFE tracks.
+- A guard of 64 consecutive empty decoder runs prevents an infinite loop while still allowing normal priming/setup runs.
+- Corrected the SACD cache failure log label (`SACD DSF cache FAILED`).
+
+## v7 — logical stream limiter / Range seek fix
+
+- HTTP Range connections from a renderer that already has an active logical stream no longer consume an additional Max Streams slot.
+- Prevents VLC/renderer seek and prefetch requests from receiving `503 Service Unavailable` merely because the renderer already owns a stream.
+- Keeps the configured stream limit meaningful at the client/logical-stream level.
+- DVD-Audio PCM/libFLAC path from v6 is preserved unchanged.
+
+## DVD-Audio PCM-authoritative FLAC encoding
+
+- The DVD-Audio decoder is now opened and the first real PCM chunk is decoded before configuring libFLAC.
+- Sample rate and channel count are taken from the actual decoder output rather than relying only on `file_info` metadata.
+- This handles DVD-Audio program variants where metadata and decoded PCM layout differ, including downmix and C/LFE variants.
+- Every subsequent PCM chunk is checked for stable sample rate/channel count and failures include the expected and actual format.
+- The first decoded chunk is retained and encoded, so no PCM samples are lost while determining the FLAC stream parameters.
+
+## DVD-Audio decoder seek/diagnostic fix v5
+
+- DVD-Audio decoding no longer initializes `input_decoder` with `input_flag_no_seeking`; the source decoder may seek internally for DVD navigation/program data.
+- HTTP 503 responses now include the stored conversion error detail.
+- Server diagnostics log the conversion detail when a DVD-Audio cache job fails.
+
+## Media-serving diagnostics v4
+
+- DVD-Audio/cache preparation failures no longer collapse into an indistinguishable HTTP 404.
+- A known media item whose output cannot currently be prepared now returns HTTP 503 with `Retry-After: 1`.
+- Network logging records `ITEM_NOT_FOUND`, `DVDA_CACHE_FAILED`, `OUTPUT_FILE_OPEN_FAILED`, and empty-output failures separately.
+- This separates stale/unknown DIDL media IDs from DVD-Audio decoder/cache failures during VLC and renderer diagnostics.
+
+## DVD-Audio decoder probe / cache serving fix
+
+- Removed the hard `dvda_plugin_installed()` gate from `ensureCachedFlac()`. The actual decoder path already opens the source through foobar2000's `input_entry` services, so component-version enumeration is no longer treated as proof of decoder availability.
+- A valid existing FLAC cache can now be served even when component-version probing temporarily returns no result.
+- When probing does not find the component, the server logs that it will attempt cache/decode directly; an actual decode failure is reported as the conversion error instead of becoming a silent generic 404.
+- Cache manifests use the detected `foo_input_dvda` version when available, or `unknown` when the probe is unavailable.
+- The supplied `foo_input_dvda` 0.8.1 source identifies the component as `foo_input_dvda.dll` / `DVD-Audio Decoder`, which is compatible with the filename-based probe; the runtime path no longer depends on that probe for playback.
+- Cache format remains 4 because this change does not alter the FLAC file format.
+
+## Stable media IDs v2
+
+- Media URLs now use deterministic IDs derived from source path + subsong.
+- IDs survive foobar2000/component restarts instead of relying on `m_nextId`.
+- This prevents stale VLC/DLNA DIDL resource URLs from becoming HTTP 404 after a restart.
+- DVD-Audio FLAC serving continues to use the official libFLAC runtime and cache path.
+
+
+## 0.8-alpha3-u-dvda-flac — DLNA FLAC compatibility fix
+
+- Added FLAC to `ConnectionManager::GetProtocolInfo` Source.
+- Added `DLNA.ORG_PN=FLAC` to FLAC HTTP `contentFeatures.dlna.org`.
+- Kept DIDL-Lite and HTTP FLAC profile metadata consistent.
+- Preserved Range/206 and application read-ahead handling.
+
+# Current tree — 0.8-alpha3-u-dvda-flac-libflac
+
+- Replaced the hand-written DVD-Audio FLAC frame writer with the official Xiph libFLAC 1.5.x runtime encoder.
+- Removed frame-level FLAC validation that assumed the old writer's fixed-block/verbatim layout. Validation now checks the native `fLaC` signature, metadata chain, STREAMINFO and frame start without duplicating FLAC encoding logic.
+- Bumped DVD-Audio cache format from 3 to 4 so caches produced by the removed writer are not reused.
+- Failed/partial DVD-Audio FLAC conversions are cleaned up before the cache is published.
+- Added the Win64 `libFLAC.dll` runtime to the project and made the Visual Studio build copy it to the component output directory.
+- Removed obsolete per-revision build/audit/release notes from the source package and consolidated the current documentation.
+
+
+## Superseded — previous DVD-Audio FLAC writer
+
+The earlier hand-written FLAC frame fixes and cache format 3 are superseded by the libFLAC 1.5.x integration at the top of this changelog. Those frame-level details are retained here only as historical context; the current source no longer contains that writer or its assumptions.
+
+
 # Alpha 3 V — client counters, stream limit, performance
 
 Applied on top of Alpha 3 U. Not compiled here (no MSVC); the new logic was tested outside Windows (see **Tests**).
@@ -45,7 +119,7 @@ Requested: search for bugs, optimize, update documentation. Reviewed by an AI as
 
 
 
-Applied on top of Alpha 3 S. See `CODE_AUDIT_0.8_ALPHA3_T.md`.
+Applied on top of Alpha 3 S. See `CHANGELOG.md`.
 
 **New: complete browse tree**
 - The root used to expose only `Artists`. It now exposes `Artists`, `Albums`, `Genres`, `Folders` and `All Tracks`:
@@ -93,7 +167,7 @@ Alpha 3 M source-level hardening:
 
 # Alpha 3 L — View menu crash fix
 
-**Critical fix:** all commands exposed by View → SACD DLNA now have GUIDs returned by `get_command()`. This prevents the `uBugCheck()` path that could crash foobar2000 when the View menu was opened. See `BUILD_VALIDATION_0.8_ALPHA3_L.md`.
+**Critical fix:** all commands exposed by View → SACD DLNA now have GUIDs returned by `get_command()`. This prevents the `uBugCheck()` path that could crash foobar2000 when the View menu was opened. See `BUILD.md`.
 
 ## v0.8 Alpha 3 J
 
@@ -104,7 +178,7 @@ Alpha 3 M source-level hardening:
 - Clarified that local SSDP self-probe validates the local stack but does not prove end-to-end visibility across every network segment.
 - Kept richer DIDL-Lite metadata, artwork cache, bounded concurrent clients/cancellation, invalidation-aware cache manifests, Music Library callbacks, network logging, GitHub Actions packaging and T+A renderer negotiation as completed roadmap items.
 - Updated the advertised component/server version to `0.8-alpha3-j`.
-- **Build status:** Alpha 3 I was confirmed by the maintainer as compiling and running; see `BUILD_VALIDATION_0.8_ALPHA3_I.md`. Alpha 3 J contains new source changes and requires a fresh Windows/MSVC v142 rebuild.
+- **Build status:** Alpha 3 I was confirmed by the maintainer as compiling and running; see `BUILD.md`. Alpha 3 J contains new source changes and requires a fresh Windows/MSVC v142 rebuild.
 
 # Changelog
 
@@ -174,7 +248,7 @@ Source changes after the build-validated Alpha 3 E revision:
 - Fixed WTL property condition so an undefined `WTL_ROOT` does not produce a bogus include path.
 - Added `tools/check_build_env.ps1`.
 - Added `tools/build.ps1` for reproducible Debug/Release x64 MSBuild invocation with `WTLIncludeDir`.
-- Added `WTL_SETUP.md` and `V142_WTL_FIX.md`.
+- Added `BUILD.md` and `BUILD.md`.
 
 
 ## 0.8-alpha1
@@ -253,7 +327,7 @@ Approximate stereo payload rates: DSD64 = 5.64 Mbit/s; DSD128 = 11.29 Mbit/s; DS
 ## Build fix: v142 + WTL
 - Changed the component project back to MSVC v142.
 - Added configurable WTL include path support.
-- Added WTL_SETUP.md and a PowerShell helper for configuring SDK projects.
+- Added WTL configuration documentation and build helpers.
 - Added explicit build documentation for the `atlapp.h` dependency.
 
 ## v0.8 Alpha 3 I
@@ -300,4 +374,8 @@ Alpha 3 Q removes the invalid MSBuild item-list-to-property conversion from WTL 
 ## 0.8 Alpha 3 S — compile fixes
 - Fixed `const std::mutex` locking in live status by making the prefetch mutex mutable.
 - Fixed ambiguous signed/unsigned `jsonNumberFieldEquals()` overload resolution with explicit integer casts.
-- Added `tools/apply_sdk_wtl_patch.ps1` and `WTL_SDK_INTEGRATION.md` so WTL include discovery is propagated to libPPUI and foobar2000_sdk_helpers.
+- Added `tools/apply_sdk_wtl_patch.ps1` and `BUILD.md` so WTL include discovery is propagated to libPPUI and foobar2000_sdk_helpers.
+
+## Current fix
+- Keep `/media/<id>` stable across library refreshes using source path + subsong identity.
+- Prevent stale UPnP Browse URLs from turning into HTTP 404 while the track remains shared.

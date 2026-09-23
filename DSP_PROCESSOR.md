@@ -54,4 +54,4 @@ This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
 <SDK root>\<WTL folder>\include
 ```
 
-See `BUILD.md`, `WTL_SETUP.md` and `V142_WTL_FIX.md` for the complete configuration.
+See `BUILD.md`, `BUILD.md` and `BUILD.md` for the complete configuration.

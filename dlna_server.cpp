@@ -5,6 +5,7 @@
 #include "dsp_bridge.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <filesystem>
@@ -16,6 +17,34 @@
 #include <unordered_set>
 
 namespace fs = std::filesystem;
+
+namespace {
+// Mirrors dvd_audio_flac.cpp's own DLL search order (component directory
+// first, then the default LoadLibrary search path) without touching any of
+// its state, so this is safe to call from start() purely as a diagnostic.
+bool probeLibFlacDllPresent(std::wstring& triedPathOut) {
+    wchar_t path[MAX_PATH]{};
+    HMODULE self = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&probeLibFlacDllPresent), &self)) {
+        const DWORD n = GetModuleFileNameW(self, path, static_cast<DWORD>(std::size(path)));
+        if (n && n < std::size(path)) {
+            std::wstring dir(path, path + n);
+            const auto slash = dir.find_last_of(L"\\/");
+            if (slash != std::wstring::npos) {
+                dir.resize(slash);
+                triedPathOut = dir + L"\\libFLAC.dll";
+                HMODULE probe = LoadLibraryExW(triedPathOut.c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE);
+                if (probe) { FreeLibrary(probe); return true; }
+            }
+        }
+    }
+    HMODULE fallback = LoadLibraryExW(L"libFLAC.dll", nullptr, LOAD_LIBRARY_AS_DATAFILE);
+    if (fallback) { FreeLibrary(fallback); return true; }
+    return false;
+}
+}
 
 namespace {
 
@@ -35,8 +64,8 @@ constexpr const char* kGenrePrefix = "genre-";
 constexpr const char* kFolderPrefix = "folder-";
 constexpr size_t kMaxHttpHeader = 128 * 1024;
 constexpr size_t kMaxSoapBody = 2 * 1024 * 1024;
-constexpr uint32_t kCacheFormatVersion = 2;
-constexpr const char* kVersion = "0.8-alpha3-u-dvda-flac";
+constexpr uint32_t kCacheFormatVersion = 4; // invalidates caches produced by the removed hand-written FLAC writer
+constexpr const char* kVersion = "0.8-alpha3-u-dvda-flac-stableids-v8";
 
 std::string lowerCopy(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -78,6 +107,7 @@ std::string trimCopy(std::string s) {
 std::mutex g_logMutex;
 
 std::wstring utf8ToWide(const char* text);   // defined further down
+uint64_t fileSizeSafe(const std::wstring& path);
 
 // foobar2000 hands out paths in its canonical form: local files look like
 // "file://D:\Music\album.dsf", and core_api::get_profile_path() is a file:// URL
@@ -213,6 +243,75 @@ std::string cacheKeyFor(const std::string& sourcePath, t_uint32 subsong) {
 
 std::wstring cacheMetaPath(const std::wstring& dsfPath) { return dsfPath + L".json"; }
 
+
+// Structural validation for generated DVD-A FLAC.  This deliberately avoids
+// interpreting FLAC frame internals: frame headers/subframes/CRCs are owned by
+// libFLAC.  We only verify the native fLaC marker, STREAMINFO and that at least
+// one frame starts after the complete metadata chain.
+bool validateFlacFile(const std::wstring& path, uint32_t expectedRate = 0, uint32_t expectedChannels = 0, uint32_t expectedBits = 0, uint64_t expectedSamples = 0) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+
+    char signature[4]{};
+    f.read(signature, sizeof(signature));
+    if (f.gcount() != static_cast<std::streamsize>(sizeof(signature)) || memcmp(signature, "fLaC", 4) != 0) return false;
+
+    bool haveStreamInfo = false;
+    bool lastMetadata = false;
+    uint32_t rate = 0;
+    uint32_t channels = 0;
+    uint32_t bits = 0;
+    uint64_t samples = 0;
+
+    while (!lastMetadata) {
+        uint8_t header[4]{};
+        f.read(reinterpret_cast<char*>(header), sizeof(header));
+        if (f.gcount() != static_cast<std::streamsize>(sizeof(header))) return false;
+
+        lastMetadata = (header[0] & 0x80) != 0;
+        const uint8_t type = header[0] & 0x7F;
+        const uint32_t length = (static_cast<uint32_t>(header[1]) << 16) |
+                                (static_cast<uint32_t>(header[2]) << 8) |
+                                static_cast<uint32_t>(header[3]);
+        if (type == 0) {
+            if (haveStreamInfo || length != 34) return false;
+            std::array<uint8_t, 34> info{};
+            f.read(reinterpret_cast<char*>(info.data()), static_cast<std::streamsize>(info.size()));
+            if (f.gcount() != static_cast<std::streamsize>(info.size())) return false;
+
+            rate = (static_cast<uint32_t>(info[10]) << 12) |
+                   (static_cast<uint32_t>(info[11]) << 4) |
+                   (static_cast<uint32_t>(info[12]) >> 4);
+            channels = ((static_cast<uint32_t>(info[12]) & 0x0E) >> 1) + 1;
+            bits = (((static_cast<uint32_t>(info[12]) & 0x01) << 4) |
+                    (static_cast<uint32_t>(info[13]) >> 4)) + 1;
+            samples = (static_cast<uint64_t>(info[13] & 0x0F) << 32) |
+                      (static_cast<uint64_t>(info[14]) << 24) |
+                      (static_cast<uint64_t>(info[15]) << 16) |
+                      (static_cast<uint64_t>(info[16]) << 8) |
+                      static_cast<uint64_t>(info[17]);
+            if (!rate || !channels || !bits || !samples) return false;
+            haveStreamInfo = true;
+        } else {
+            f.seekg(static_cast<std::streamoff>(length), std::ios::cur);
+            if (!f) return false;
+        }
+    }
+
+    if (!haveStreamInfo) return false;
+    if (expectedRate && rate != expectedRate) return false;
+    if (expectedChannels && channels != expectedChannels) return false;
+    if (expectedBits && bits != expectedBits) return false;
+    if (expectedSamples && samples != expectedSamples) return false;
+
+    // A native FLAC stream must contain encoded audio after the metadata.
+    uint8_t framePrefix[2]{};
+    f.read(reinterpret_cast<char*>(framePrefix), sizeof(framePrefix));
+    if (f.gcount() != static_cast<std::streamsize>(sizeof(framePrefix))) return false;
+    if (framePrefix[0] != 0xFF || (framePrefix[1] & 0xFC) != 0xF8) return false;
+
+    return fileSizeSafe(path) > 42;
+}
 
 bool jsonNumberFieldEquals(const std::string& json, const char* name, uint64_t value) {
     const std::string needle = std::string("\"") + name + "\":" + std::to_string(value);
@@ -549,6 +648,30 @@ void SacdDlnaServer::start() {
         return;
     }
 
+    // Non-fatal: DVD-Audio -> FLAC conversion needs libFLAC.dll next to
+    // foo_sacd_dlna.dll (see FLAC_RUNTIME.md). Missing it does not stop DSD/SACD
+    // sharing, but every DVD-Audio track will otherwise fail silently, one at a
+    // time, as "DVDA_CACHE_FAILED" 503s that only show up in the DLNA renderer
+    // and in dlna_dvda_flac.log -- easy to miss for days. Say it once, loudly,
+    // right when the component starts, with the exact path that was tried.
+    {
+        std::wstring triedPath;
+        if (!probeLibFlacDllPresent(triedPath)) {
+            if (!triedPath.empty()) {
+                console::printf(
+                    "SACD DLNA: libFLAC.dll was not found at \"%s\" -- DVD-Audio to FLAC "
+                    "conversion will fail for every track until it is copied there "
+                    "(see FLAC_RUNTIME.md). DSD/SACD sharing is not affected.",
+                    pfc::stringcvt::string_utf8_from_wide(triedPath.c_str()).get_ptr());
+            } else {
+                console::print(
+                    "SACD DLNA: libFLAC.dll was not found -- DVD-Audio to FLAC conversion "
+                    "will fail for every track until it is copied next to foo_sacd_dlna.dll "
+                    "(see FLAC_RUNTIME.md). DSD/SACD sharing is not affected.");
+            }
+        }
+    }
+
     m_port = static_cast<uint16_t>(std::clamp<uint32_t>(sacd_dlna_cfg::port.get(), 1024, 65535));
 
     {
@@ -794,7 +917,7 @@ SacdDlnaStatus SacdDlnaServer::get_status() const {
         s.prebufferBytes = m_prebufferBytes;
         s.prebufferTargetBytes = m_prebufferTargetBytes;
         if (!s.streamingActive || !s.prebufferTargetBytes) s.bufferState = s.streamingActive ? "STREAMING / NO READ-AHEAD" : "IDLE";
-        else if (s.prebufferBytes == 0) s.bufferState = "DEPLETED / RISK OF UNDERRUN";
+        else if (s.prebufferBytes == 0) s.bufferState = "READ-AHEAD CONSUMED / STREAMING";
         else {
             const uint64_t pct = s.prebufferBytes * 100ULL / s.prebufferTargetBytes;
             if (pct >= 80) s.bufferState = "READY / FULL RESERVE";
@@ -1011,6 +1134,13 @@ std::string SacdDlnaServer::chooseRendererMime(const std::string& defaultMime) c
         } else if (lowerDefault.find("dff") != std::string::npos) {
             if (protocolListSupports(protocols, "audio/x-dff")) return "audio/x-dff";
             if (protocolListSupports(protocols, "audio/dff")) return "audio/dff";
+        } else if (lowerDefault == "audio/flac") {
+            // Different UPnP renderers use both MIME spellings for FLAC.
+            // Prefer the exact standard spelling when the renderer advertises it,
+            // but fall back to the legacy x-flac spelling when that is what the
+            // renderer's ConnectionManager actually accepts.
+            if (protocolListSupports(protocols, "audio/flac")) return "audio/flac";
+            if (protocolListSupports(protocols, "audio/x-flac")) return "audio/x-flac";
         }
     }
     return defaultMime;
@@ -1186,6 +1316,12 @@ std::string SacdDlnaServer::detectImageMime(const void* data, size_t size) {
 }
 
 std::string SacdDlnaServer::didlProtocolInfo(const std::string& mime) {
+    // FLAC has a registered DLNA media-format profile. Advertising the profile
+    // is important for strict renderers: MIME alone does not always identify
+    // the media format profile they are willing to render.
+    if (!_stricmp(mime.c_str(), "audio/flac") || !_stricmp(mime.c_str(), "audio/x-flac")) {
+        return "http-get:*:" + mime + ":DLNA.ORG_PN=FLAC;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=03700000000000000000000000000000";
+    }
     return "http-get:*:" + mime + ":DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000";
 }
 
@@ -1445,7 +1581,11 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
         if (item.albumId) out += "<upnp:albumArtURI>" + artUri(item.albumId) + "</upnp:albumArtURI>";
 
         std::string res = "<res protocolInfo=\"" + chooseRendererProtocolInfo(mime) + "\"";
-        if (item.track.fileSize) res += " size=\"" + std::to_string(item.track.fileSize) + "\"";
+        // For DVD-Audio the source file size is not the served FLAC size.
+        // Do not publish a false res@size value: the renderer may use it for
+        // HTTP range requests and reject a resource whose advertised length
+        // does not match Content-Length.
+        if (item.track.fileSize && !item.dvdAudio) res += " size=\"" + std::to_string(item.track.fileSize) + "\"";
         if (item.track.duration > 0) res += " duration=\"" + formatDuration(item.track.duration) + "\"";
         if (item.track.dsdRate) {
             res += " sampleFrequency=\"" + std::to_string(item.track.dsdRate) + "\"";
@@ -1453,6 +1593,10 @@ std::string SacdDlnaServer::browseDidl(const std::string& objectId, bool metadat
             res += " nrAudioChannels=\"" + std::to_string(item.track.channels ? item.track.channels : 2) + "\"";
             // DIDL-Lite res@bitrate is expressed in bytes/second, not bits/second.
             res += " bitrate=\"" + std::to_string(static_cast<uint64_t>(item.track.dsdRate) / 4ULL) + "\"";
+        } else if (item.dvdAudio && item.sourceSampleRate) {
+            res += " sampleFrequency=\"" + std::to_string(item.sourceSampleRate) + "\"";
+            if (item.sourceBitsPerSample) res += " bitsPerSample=\"" + std::to_string(item.sourceBitsPerSample) + "\"";
+            if (item.sourceChannels) res += " nrAudioChannels=\"" + std::to_string(item.sourceChannels) + "\"";
         }
         res += ">" + base + "/media/" + std::to_string(item.id) + servedExt + "</res>";
         out += res;
@@ -1850,7 +1994,18 @@ bool SacdDlnaServer::ensureProcessedDsf(const Item& item, std::wstring& cachePat
         std::lock_guard<std::mutex> g(m_cacheMutex); job->success = success; job->done = true; m_cacheJobs.erase(jobKey);
     }
     job->cv.notify_all();
-    if (!success) return false;
+    if (!success) {
+        std::string detail;
+        {
+            std::lock_guard<std::mutex> g(m_diagMutex);
+            detail = m_lastError;
+        }
+        if (detail.empty()) detail = "unknown conversion failure";
+        networkLog("DSP DSF cache FAILED: id=" + std::to_string(item.id) +
+            " title=\"" + item.track.title + "\" source=" + item.sourcePath +
+            " subsong=" + std::to_string(item.subsong) + " detail=" + detail);
+        return false;
+    }
     cachePath = path; return true;
 }
 
@@ -1942,7 +2097,18 @@ bool SacdDlnaServer::ensureCached(const Item& item, std::wstring& cachePath, Dsd
         std::lock_guard<std::mutex> g(m_cacheMutex); job->success = success; job->done = true; m_cacheJobs.erase(key);
     }
     job->cv.notify_all();
-    if (!success) return false;
+    if (!success) {
+        std::string detail;
+        {
+            std::lock_guard<std::mutex> g(m_diagMutex);
+            detail = m_lastError;
+        }
+        if (detail.empty()) detail = "unknown conversion failure";
+        networkLog("DVD-A FLAC cache FAILED: id=" + std::to_string(item.id) +
+            " title=\"" + item.track.title + "\" source=" + item.sourcePath +
+            " subsong=" + std::to_string(item.subsong) + " detail=" + detail);
+        return false;
+    }
     cachePath = path; return true;
 }
 
@@ -1951,20 +2117,27 @@ bool SacdDlnaServer::ensureCachedFlac(const Item& item, std::wstring& cachePath,
     const auto key = std::string("dvda-flac-") + cacheKeyFor(item.sourcePath, item.subsong);
     const auto path = cacheFolder() + L"\\" + utf8ToWide((key + ".flac").c_str());
     const auto manifest = cacheMetaPath(path);
-    const bool decoderInstalled = dvda_plugin_installed();
-    if (!decoderInstalled) return false;
+    // Do not gate media serving on componentversion enumeration. foo_input_dvda
+    // is the actual decoder used by decode_to_flac(), and a valid cache must remain
+    // servable even if componentversion probing temporarily returns false.
+    pfc::string8 detectedDvdaVersion;
+    const bool decoderDetected = dvda_plugin_installed(&detectedDvdaVersion);
+    const std::string detectedVersion = decoderDetected ? std::string(detectedDvdaVersion.c_str()) : std::string();
+    if (!decoderDetected) {
+        networkLog("DVD-A decoder probe did not find foo_input_dvda; attempting cache/decode directly");
+    }
 
     auto cacheValid = [&]() {
         if (!isRegularFile(path) || !isRegularFile(manifest)) return false;
         std::ifstream mf(manifest, std::ios::binary);
         std::string line((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
-        pfc::string8 dvdaVersion; dvda_plugin_installed(&dvdaVersion);
+        const bool decoderVersionMatches = detectedVersion.empty() ||
+            line.find("\"decoderVersion\":\"" + detectedVersion + "\"") != std::string::npos;
         return jsonNumberFieldEquals(line, "cacheVersion", static_cast<uint64_t>(kCacheFormatVersion)) &&
             jsonNumberFieldEquals(line, "subsong", static_cast<uint64_t>(item.subsong)) &&
             jsonNumberFieldEquals(line, "sourceSize", static_cast<uint64_t>(item.sourceSize)) &&
             jsonNumberFieldEquals(line, "sourceWriteTime", static_cast<int64_t>(item.sourceWriteTime)) &&
-            line.find("\"decoderVersion\":\"" + std::string(dvdaVersion.c_str()) + "\"") != std::string::npos &&
-            fileSizeSafe(path) > 64;
+            decoderVersionMatches && validateFlacFile(path);
     };
     if (cacheValid()) {
         { std::lock_guard<std::mutex> g(m_rateMutex); ++m_cacheHits; }
@@ -1998,16 +2171,18 @@ bool SacdDlnaServer::ensureCachedFlac(const Item& item, std::wstring& cachePath,
             rate, channels, bits, samples, [this, reportProgress](uint32_t pct) { if (reportProgress) setConversionStatus(true, pct); }))
             throw std::runtime_error("DVD-Audio decoder produced no PCM samples");
         abort.check();
-        if (rate == 0 || channels == 0 || samples == 0 || fileSizeSafe(tmp) <= 64) throw std::runtime_error("generated FLAC failed validation");
+        if (rate == 0 || channels == 0 || samples == 0 || fileSizeSafe(tmp) <= 64 ||
+            !validateFlacFile(tmp, rate, channels, bits, samples))
+            throw std::runtime_error("generated FLAC failed structural validation");
         if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("unable to finalize DVD-A FLAC cache");
         std::ofstream mf(tmpManifest, std::ios::binary | std::ios::trunc);
         if (!mf) throw std::runtime_error("unable to create DVD-A cache manifest");
-        pfc::string8 dvdaVersion; dvda_plugin_installed(&dvdaVersion);
+        const char* manifestDecoderVersion = detectedVersion.empty() ? "unknown" : detectedVersion.c_str();
         mf << "{\"cacheVersion\":" << kCacheFormatVersion
            << ",\"subsong\":" << item.subsong
            << ",\"sourceSize\":" << item.sourceSize
            << ",\"sourceWriteTime\":" << item.sourceWriteTime
-           << ",\"decoderVersion\":\"" << xmlAttr(dvdaVersion.c_str()) << "\""
+           << ",\"decoderVersion\":\"" << xmlAttr(manifestDecoderVersion) << "\""
            << ",\"sampleRate\":" << rate << ",\"channels\":" << channels << ",\"bitsPerSample\":" << bits << ",\"samples\":" << samples << "}\n";
         mf.close();
         if (!MoveFileExW(tmpManifest.c_str(), manifest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("unable to finalize DVD-A cache manifest");
@@ -2025,7 +2200,18 @@ bool SacdDlnaServer::ensureCachedFlac(const Item& item, std::wstring& cachePath,
         std::lock_guard<std::mutex> g(m_cacheMutex); job->success = success; job->done = true; m_cacheJobs.erase(key);
     }
     job->cv.notify_all();
-    if (!success) return false;
+    if (!success) {
+        std::string detail;
+        {
+            std::lock_guard<std::mutex> g(m_diagMutex);
+            detail = m_lastError;
+        }
+        if (detail.empty()) detail = "unknown conversion failure";
+        networkLog("SACD DSF cache FAILED: id=" + std::to_string(item.id) +
+            " title=\"" + item.track.title + "\" source=" + item.sourcePath +
+            " subsong=" + std::to_string(item.subsong) + " detail=" + detail);
+        return false;
+    }
     cachePath = path; return true;
 }
 
@@ -2131,14 +2317,47 @@ void SacdDlnaServer::prefetchNextTrack(uint32_t itemId) {
 bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& requestLine,
                                 const std::string& requestHeaders, const std::string& peerIp,
                                 abort_callback_impl& aborter) {
+    // Without a send timeout, send() blocks *inside the OS kernel* for as long as Windows keeps
+    // retrying a dead TCP connection - which can be minutes - whenever a renderer disappears
+    // mid-response without a clean close (exactly what happens on every track skip: VLC/UPnP
+    // renderers routinely abandon the HTTP connection for the track they just left). While a
+    // worker thread is stuck in that send(), it is still holding its StreamSlot below, so with a
+    // small "Max streams" limit (default 2) it only takes two abandoned connections in a row -
+    // completely normal while skipping through a playlist - to occupy every slot and make the
+    // server answer 503 to every other track, including unrelated ones, until those blocked
+    // sends eventually time out on their own (which can take a very long time). Setting this
+    // before any response - including the 503 itself - is sent makes a stuck send() fail
+    // promptly instead, so the StreamSlot destructor (and the "Max streams" slot it releases)
+    // always runs quickly.
+    const DWORD sendTimeoutMs = 15000;
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sendTimeoutMs), sizeof(sendTimeoutMs));
+
     Item item;
     bool found = false;
     {
         std::lock_guard<std::mutex> g(m_mutex);
-        const auto it = m_itemIndex.find(itemId);   // O(1); this used to scan the whole library on every media request
-        if (it != m_itemIndex.end() && it->second < m_items.size()) { item = m_items[it->second]; found = true; }
+        const auto it = m_itemIndex.find(itemId);
+        if (it != m_itemIndex.end() && it->second < m_items.size() && m_items[it->second].id == itemId) {
+            item = m_items[it->second];
+            found = true;
+        } else {
+            // Media URLs are stable for the lifetime of the server.  Do not make
+            // HTTP delivery depend on a metadb_handle still being valid: DVD-A
+            // cache generation uses sourcePath/subsong and can serve a perfectly
+            // valid cached FLAC even after the library handle has disappeared.
+            for (const auto& candidate : m_items) {
+                if (candidate.id == itemId) {
+                    item = candidate;
+                    found = true;
+                    break;
+                }
+            }
+        }
     }
-    if (!found || !item.handle.is_valid()) return false;
+    if (!found) {
+        networkLog("MEDIA 404 id=" + std::to_string(itemId) + " reason=ITEM_NOT_FOUND");
+        return false;
+    }
 
     const bool isHead = requestLine.rfind("HEAD ", 0) == 0;
 
@@ -2159,25 +2378,65 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
         setPreparingTrack(item, item.sourceExt.empty() ? "UNKNOWN" : item.sourceExt.substr(1),
                           "Native DSD -> DLNA (no conversion)", "NO CONVERSION");
     }
+    bool prepared = true;
+    std::string prepareError;
     if (item.dvdAudio) {
-        if (!ensureCachedFlac(item, path, track, aborter)) return false;
+        prepared = ensureCachedFlac(item, path, track, aborter);
         ext = ".flac";
+        if (!prepared) prepareError = "DVDA_CACHE_FAILED";
     } else if (static_cast<bool>(sacd_dlna_cfg::dsd_processor_enabled)) {
-        if (!ensureProcessedDsf(item, path, track, aborter)) return false;
+        prepared = ensureProcessedDsf(item, path, track, aborter);
         ext = ".dsf";
+        if (!prepared) prepareError = "DSP_DSF_FAILED";
     } else if (_stricmp(item.sourceExt.c_str(), ".iso") == 0) {
-        if (!ensureCached(item, path, track, aborter)) return false;
+        prepared = ensureCached(item, path, track, aborter);
         ext = ".dsf";
+        if (!prepared) prepareError = "SACD_DSF_FAILED";
     } else {
         // item.sourcePath is a foobar2000 path ("file://..."): convert before touching the disk.
         path = nativePathFromFb2k(item.sourcePath.c_str());
-        if (path.empty()) return false;   // not a plain local file
+        prepared = !path.empty();
         ext = item.sourceExt;
+        if (!prepared) prepareError = "INVALID_NATIVE_PATH";
+    }
+
+    if (!prepared) {
+        networkLog("MEDIA 503 id=" + std::to_string(itemId) +
+            " reason=" + prepareError + " title=\"" + item.track.title +
+            "\" source=" + item.sourcePath + " subsong=" + std::to_string(item.subsong));
+        std::string detail;
+        {
+            std::lock_guard<std::mutex> g(m_diagMutex);
+            detail = m_lastError;
+        }
+        if (detail.empty()) detail = prepareError;
+        const std::string body = "Media temporarily unavailable: " + prepareError + " | " + detail;
+        const std::string hdr = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " +
+            std::to_string(body.size()) + "\r\nRetry-After: 1\r\nConnection: close\r\n\r\n";
+        sendAll(s, hdr.data(), hdr.size(), &aborter);
+        sendAll(s, body.data(), body.size(), &aborter);
+        return true;
     }
 
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return false;
+    if (!f) {
+        networkLog("MEDIA 503 id=" + std::to_string(itemId) + " reason=OUTPUT_FILE_OPEN_FAILED");
+        const std::string body = "Media temporarily unavailable: OUTPUT_FILE_OPEN_FAILED";
+        const std::string hdr = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " +
+            std::to_string(body.size()) + "\r\nRetry-After: 1\r\nConnection: close\r\n\r\n";
+        sendAll(s, hdr.data(), hdr.size(), &aborter);
+        sendAll(s, body.data(), body.size(), &aborter);
+        return true;
+    }
     const uint64_t size = static_cast<uint64_t>(f.tellg());
+    if (size == 0) {
+        networkLog("MEDIA 503 id=" + std::to_string(itemId) + " reason=OUTPUT_FILE_EMPTY");
+        const std::string body = "Media temporarily unavailable: OUTPUT_FILE_EMPTY";
+        const std::string hdr = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " +
+            std::to_string(body.size()) + "\r\nRetry-After: 1\r\nConnection: close\r\n\r\n";
+        sendAll(s, hdr.data(), hdr.size(), &aborter); sendAll(s, body.data(), body.size(), &aborter);
+        return true;
+    }
     if (track.fileSize == 0) track.fileSize = size;
     if (track.dsdRate == 0 && _stricmp(ext.c_str(), ".dsf") == 0) {
         uint32_t channels = 0; uint64_t samples = 0; uint64_t fileSize = 0;
@@ -2214,20 +2473,30 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
     } slot{ this, peerIp };
     if (!isHead) {
         const uint32_t limit = sacd_dlna_max_streams();
-        if (!m_streamLimiter.tryAcquire(limit)) {
+        // VLC and hardware renderers can open a second HTTP connection for a Range
+        // seek/prefetch while the same renderer is already streaming.  That is one
+        // logical client stream, not a second audio stream.  Requiring another
+        // limiter slot caused perfectly valid DSF seeks and DVD-A retries to receive
+        // 503 when Max streams was already reached.
+        const bool peerAlreadyStreaming = m_clientRegistry.hasActiveStream(peerIp);
+        if (!peerAlreadyStreaming && !m_streamLimiter.tryAcquire(limit)) {
             const std::string hdr503 = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
             sendAll(s, hdr503.data(), hdr503.size(), &aborter);
-            networkLog("stream rejected: limit of " + std::to_string(limit) + " concurrent stream(s) reached (" + peerIp + ")");
+            networkLog("stream rejected: limit of " + std::to_string(limit) + " concurrent logical stream(s) reached (" + peerIp + ")");
             return true;
         }
-        slot.held = true;
-        if (isClientPeer(peerIp)) m_clientRegistry.streamStarted(peerIp, clientreg::Clock::now());
+        slot.held = !peerAlreadyStreaming;
+        if (!peerAlreadyStreaming && isClientPeer(peerIp)) m_clientRegistry.streamStarted(peerIp, clientreg::Clock::now());
     }
 
     const std::string mime = chooseRendererMime(mimeForExtension(ext));
     std::string hdr = partial ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n";
     hdr += "Content-Type: " + mime + "\r\nContent-Length: " + std::to_string(length) + "\r\nAccept-Ranges: bytes\r\n";
-    hdr += "transferMode.dlna.org: Streaming\r\ncontentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n";
+    if (!_stricmp(ext.c_str(), ".flac")) {
+        hdr += "transferMode.dlna.org: Streaming\r\ncontentFeatures.dlna.org: DLNA.ORG_PN=FLAC;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=03700000000000000000000000000000\r\n";
+    } else {
+        hdr += "transferMode.dlna.org: Streaming\r\ncontentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n";
+    }
     hdr += "Cache-Control: no-cache\r\n";
     if (partial) hdr += "Content-Range: bytes " + std::to_string(begin) + "-" + std::to_string(end) + "/" + std::to_string(size) + "\r\n";
     hdr += "Connection: close\r\n\r\n";
@@ -2235,9 +2504,32 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
 
     if (requestLine.rfind("HEAD ", 0) == 0) return true;
 
-    const int sndbuf = sacd_dlna_cfg::stability_mode && track.dsdRate
-        ? static_cast<int>(std::clamp<uint64_t>(static_cast<uint64_t>(track.dsdRate) / 4ULL * std::clamp<uint32_t>(sacd_dlna_cfg::prebuffer_seconds.get(), 5, 60), 512ull * 1024ull, 32ull * 1024ull * 1024ull))
-        : 4 * 1024 * 1024;
+    // SO_SNDBUF is only the Windows TCP socket buffer.  For DVD-A/FLAC the
+    // important reserve is an application-level read-ahead: the renderer must
+    // receive a useful amount of contiguous FLAC before the first send and the
+    // cache file must not be confused with a pre-buffer that does not actually
+    // contain any data in RAM.
+    const uint32_t prebufferSeconds = std::clamp<uint32_t>(sacd_dlna_cfg::prebuffer_seconds.get(), 5, 60);
+    uint64_t prebufferTarget = 0;
+    if (sacd_dlna_cfg::stability_mode) {
+        if (track.dsdRate) {
+            prebufferTarget = static_cast<uint64_t>(track.dsdRate) / 4ULL * prebufferSeconds;
+        } else if (item.dvdAudio && track.duration > 0.0) {
+            // FLAC is variable bitrate, so derive the reserve from the actual
+            // cached file rather than assuming PCM bytes/sec.
+            const uint64_t fileBytesPerSecond = static_cast<uint64_t>(
+                std::max<double>(1.0, static_cast<double>(length) / track.duration));
+            prebufferTarget = fileBytesPerSecond * prebufferSeconds;
+        } else {
+            prebufferTarget = 4ULL * 1024ULL * 1024ULL;
+        }
+        prebufferTarget = std::clamp<uint64_t>(prebufferTarget, 512ULL * 1024ULL, 32ULL * 1024ULL * 1024ULL);
+        if (length < prebufferTarget) prebufferTarget = length;
+    }
+
+    const int sndbuf = static_cast<int>(std::clamp<uint64_t>(
+        std::max<uint64_t>(4ULL * 1024ULL * 1024ULL, prebufferTarget),
+        4ULL * 1024ULL * 1024ULL, 32ULL * 1024ULL * 1024ULL));
     setsockopt(s, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&sndbuf), sizeof(sndbuf));
 
     std::string sourceFormat = item.sourceExt.empty() ? "UNKNOWN" : item.sourceExt.substr(1);
@@ -2263,22 +2555,43 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
     bool ok = false;
     try {
         prefetchNextTrack(itemId);
+        // Real application-level read-ahead.  The old code only populated the
+        // status counters; it did not actually buffer any FLAC data.  For a
+        // renderer such as the SDX this can make the first FLAC requests race
+        // with socket/file delivery.  Read the reserve before sending audio.
+        std::vector<char> prebuffer;
+        if (prebufferTarget) {
+            prebuffer.resize(static_cast<size_t>(prebufferTarget));
+            f.read(prebuffer.data(), static_cast<std::streamsize>(prebuffer.size()));
+            const auto n = f.gcount();
+            if (n <= 0) throw std::runtime_error("unable to fill DVD-A FLAC read-ahead buffer");
+            prebuffer.resize(static_cast<size_t>(n));
+        }
         {
             std::lock_guard<std::mutex> g(m_rateMutex);
-            if (sacd_dlna_cfg::stability_mode && track.dsdRate) {
-            const uint32_t prebufferSeconds = std::clamp<uint32_t>(sacd_dlna_cfg::prebuffer_seconds.get(), 5, 60);
-            const uint64_t requestedBytes = static_cast<uint64_t>(track.dsdRate) / 4ULL * prebufferSeconds;
-            m_prebufferTargetBytes = length < requestedBytes ? length : requestedBytes;
-            m_prebufferBytes = m_prebufferTargetBytes < 256ull * 1024ull * 1024ull ? m_prebufferTargetBytes : 256ull * 1024ull * 1024ull;
-            } else {
-                m_prebufferTargetBytes = m_prebufferBytes = 0;
-            }
+            m_prebufferTargetBytes = prebufferTarget;
+            m_prebufferBytes = static_cast<uint64_t>(prebuffer.size());
         }
 
-        char buf[128 * 1024];
         uint64_t remaining = length;
+        size_t bufferedOffset = 0;
         while (remaining) {
             aborter.check();
+            if (bufferedOffset < prebuffer.size()) {
+                const size_t available = prebuffer.size() - bufferedOffset;
+                const size_t n = static_cast<size_t>(std::min<uint64_t>(available, remaining));
+                sendAll(s, prebuffer.data() + bufferedOffset, n, &aborter);
+                updateStreamBytes(static_cast<uint64_t>(n));
+                bufferedOffset += n;
+                remaining -= static_cast<uint64_t>(n);
+                {
+                    std::lock_guard<std::mutex> g(m_rateMutex);
+                    m_prebufferBytes = static_cast<uint64_t>(prebuffer.size() - bufferedOffset);
+                }
+                continue;
+            }
+
+            char buf[128 * 1024];
             const uint64_t maxRead = static_cast<uint64_t>(sizeof(buf));
             const size_t want = static_cast<size_t>(remaining < maxRead ? remaining : maxRead);
             f.read(buf, static_cast<std::streamsize>(want));
@@ -2287,11 +2600,6 @@ bool SacdDlnaServer::serveMedia(SOCKET s, uint32_t itemId, const std::string& re
             sendAll(s, buf, static_cast<size_t>(n), &aborter);
             updateStreamBytes(static_cast<uint64_t>(n));
             remaining -= static_cast<uint64_t>(n);
-            {
-                std::lock_guard<std::mutex> g(m_rateMutex);
-                if (m_prebufferBytes > static_cast<uint64_t>(n)) m_prebufferBytes -= static_cast<uint64_t>(n);
-                else m_prebufferBytes = 0;
-            }
         }
         ok = remaining == 0;
     } catch (const exception_aborted&) {
@@ -2524,7 +2832,12 @@ void SacdDlnaServer::handleClient(SOCKET s, abort_callback_impl& aborter) {
     }
 
     if (line.rfind("POST /ctl/ConnectionManager", 0) == 0) {
-        const std::string body = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:GetProtocolInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:ConnectionManager:1\"><Source>http-get:*:audio/dsf:DLNA.ORG_OP=01;DLNA.ORG_CI=0,http-get:*:audio/x-dsf:DLNA.ORG_OP=01;DLNA.ORG_CI=0,http-get:*:audio/dff:DLNA.ORG_OP=01;DLNA.ORG_CI=0,http-get:*:audio/x-dff:DLNA.ORG_OP=01;DLNA.ORG_CI=0</Source><Sink></Sink></u:GetProtocolInfoResponse></s:Body></s:Envelope>";
+        // Keep the advertised Source list synchronized with what the server can
+        // actually publish.  FLAC was missing here even though DIDL-Lite and
+        // the HTTP endpoint advertised audio/flac.  Strict renderers can reject
+        // a resource when ConnectionManager::GetProtocolInfo does not list its
+        // MIME type.
+        const std::string body = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:GetProtocolInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:ConnectionManager:1\"><Source>http-get:*:audio/flac:DLNA.ORG_PN=FLAC;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=03700000000000000000000000000000,http-get:*:audio/x-flac:DLNA.ORG_PN=FLAC;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=03700000000000000000000000000000,http-get:*:audio/dsf:DLNA.ORG_OP=01;DLNA.ORG_CI=0,http-get:*:audio/x-dsf:DLNA.ORG_OP=01;DLNA.ORG_CI=0,http-get:*:audio/dff:DLNA.ORG_OP=01;DLNA.ORG_CI=0,http-get:*:audio/x-dff:DLNA.ORG_OP=01;DLNA.ORG_CI=0</Source><Sink></Sink></u:GetProtocolInfoResponse></s:Body></s:Envelope>";
         sendXml(body); return;
     }
 
@@ -2872,6 +3185,37 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
     const bool dspInstalled = !dspEnabled || DsdProcessorBridge::installed();   // evaluated once, not per track
     const std::unordered_set<std::string> sharedFormats = parseSharedFormats(std::string(sacd_dlna_cfg::shared_formats.get()));   // parsed once, not per track
 
+    // Media IDs must remain stable not only across publish()/refresh(), but also
+    // across a foobar2000/component restart. VLC may keep DIDL resources briefly
+    // and reuse /media/<id> after SSDP rediscovery. A per-process m_nextId scheme
+    // therefore cannot be used here: the same ID can refer to a different track
+    // after restart, or disappear entirely.
+    //
+    // The playable identity is the normalized foobar path + subsong index. We
+    // derive a deterministic non-zero 32-bit ID from that key and resolve the
+    // extremely unlikely hash collision deterministically within this publish.
+    std::unordered_set<uint32_t> assignedMediaIds;
+    assignedMediaIds.reserve(items.get_count() * 2 + 1);
+    auto stableMediaId = [&](const std::string& key) -> uint32_t {
+        uint64_t h = 1469598103934665603ULL;
+        for (unsigned char c : key) {
+            h ^= c;
+            h *= 1099511628211ULL;
+        }
+        uint32_t id = static_cast<uint32_t>((h ^ (h >> 32)) & 0x7fffffffU);
+        if (id == 0) id = 1;
+        for (uint32_t salt = 0; assignedMediaIds.find(id) != assignedMediaIds.end(); ++salt) {
+            uint64_t x = h + 0x9e3779b97f4a7c15ULL * (static_cast<uint64_t>(salt) + 1ULL);
+            x ^= x >> 30; x *= 0xbf58476d1ce4e5b9ULL;
+            x ^= x >> 27; x *= 0x94d049bb133111ebULL;
+            x ^= x >> 31;
+            id = static_cast<uint32_t>(x & 0x7fffffffU);
+            if (id == 0) id = 1;
+        }
+        assignedMediaIds.insert(id);
+        return id;
+    };
+
     std::vector<Item> newItems; newItems.reserve(items.get_count());
     std::vector<libindex::Track> indexTracks; indexTracks.reserve(items.get_count());   // parallel to newItems
     for (size_t i = 0; i < items.get_count(); ++i) {
@@ -2891,7 +3235,13 @@ void SacdDlnaServer::publish(const metadb_handle_list& items) {
             // depending on the configured DSP mode. They are still selectable by filter.
         }
         if (!dspInstalled && !isDsd && !isDvdAudio) continue;
-        Item x; x.id = m_nextId++; x.sourcePath = path; x.sourceExt = lowerCopy(ext); x.subsong = handle->get_subsong_index(); x.dvdAudio = isDvdAudio; x.handle = handle;
+        Item x; x.sourcePath = path; x.sourceExt = lowerCopy(ext); x.subsong = handle->get_subsong_index(); x.dvdAudio = isDvdAudio; x.handle = handle;
+        {
+            std::string key = lowerCopy(x.sourcePath);
+            key.push_back('\x1f');
+            key += std::to_string(x.subsong);
+            x.id = stableMediaId(key);
+        }
 
         // File size and timestamp come from foobar2000's metadb cache, so indexing a
         // library does not stat thousands of files (this runs on the main thread).

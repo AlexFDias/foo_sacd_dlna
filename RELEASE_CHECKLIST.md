@@ -38,7 +38,7 @@ This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
 D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\WTL\include
 ```
 
-See `BUILD.md`, `WTL_SETUP.md` and `V142_WTL_FIX.md` for the complete configuration.
+See `BUILD.md`, `BUILD.md` and `BUILD.md` for the complete configuration.
 
 ## Alpha 3 G diagnostic validation note
 

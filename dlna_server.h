@@ -104,7 +104,6 @@ private:
     uint32_t m_nextPlaylistId = 1;             // folder shown as "Folders"
     // id -> position lookups, rebuilt by publish() (a linear scan per child made large Browse pages O(n^2))
     std::unordered_map<uint32_t, size_t> m_itemIndex, m_artistIndex, m_albumIndex, m_genreIndex, m_folderIndex;
-    uint32_t m_nextId = 1;
     uint32_t m_nextArtistId = 1;
     uint32_t m_nextAlbumId = 1;
     uint32_t m_nextGenreId = 1;

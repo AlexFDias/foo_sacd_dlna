@@ -64,5 +64,8 @@
   <ItemGroup>
     <None Include="HELP.md" />
   </ItemGroup>
+  <Target Name="CopyLibFLACRuntime" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)third_party\libFLAC\Win64\libFLAC.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

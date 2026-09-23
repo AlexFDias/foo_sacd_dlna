@@ -4,109 +4,139 @@
 namespace dvd_audio_flac {
 namespace {
 
-uint8_t crc8(const uint8_t* data, size_t size) {
-    uint8_t crc = 0;
-    for (size_t i = 0; i < size; ++i) {
-        crc ^= data[i];
-        for (unsigned b = 0; b < 8; ++b) crc = (crc & 0x80) ? static_cast<uint8_t>((crc << 1) ^ 0x07) : static_cast<uint8_t>(crc << 1);
+// We use the official libFLAC encoder (FLAC 1.5.x) at runtime instead of
+// maintaining a hand-written FLAC frame encoder. The project ships the
+// Win64 libFLAC.dll in third_party/libFLAC/Win64 and loads it dynamically,
+// so no import library or FLAC SDK headers are required to build foo_sacd_dlna.
+//
+// This keeps the component's build independent of a system-wide FLAC install,
+// while using Xiph's encoder for frame headers, subframes, CRCs and STREAMINFO.
+
+using FLAC_bool = int;
+using FLAC_int32 = int32_t;
+using FLAC_uint64 = uint64_t;
+
+struct FLAC_StreamEncoder;
+
+using FLAC_StreamEncoderInitStatus = int;
+
+constexpr FLAC_StreamEncoderInitStatus FLAC_INIT_OK = 0;
+
+struct FlacApi {
+    HMODULE module = nullptr;
+
+    FlacApi() = default;
+    FlacApi(const FlacApi&) = delete;
+    FlacApi& operator=(const FlacApi&) = delete;
+
+    FLAC_StreamEncoder* (*encoder_new)() = nullptr;
+    void (*encoder_delete)(FLAC_StreamEncoder*) = nullptr;
+    FLAC_bool (*set_verify)(FLAC_StreamEncoder*, FLAC_bool) = nullptr;
+    FLAC_bool (*set_streamable_subset)(FLAC_StreamEncoder*, FLAC_bool) = nullptr;
+    FLAC_bool (*set_channels)(FLAC_StreamEncoder*, uint32_t) = nullptr;
+    FLAC_bool (*set_bits_per_sample)(FLAC_StreamEncoder*, uint32_t) = nullptr;
+    FLAC_bool (*set_sample_rate)(FLAC_StreamEncoder*, uint32_t) = nullptr;
+    FLAC_bool (*set_compression_level)(FLAC_StreamEncoder*, uint32_t) = nullptr;
+    FLAC_bool (*set_blocksize)(FLAC_StreamEncoder*, uint32_t) = nullptr;
+    FLAC_bool (*set_do_mid_side_stereo)(FLAC_StreamEncoder*, FLAC_bool) = nullptr;
+    FLAC_bool (*set_total_samples_estimate)(FLAC_StreamEncoder*, FLAC_uint64) = nullptr;
+    FLAC_StreamEncoderInitStatus (*init_file)(FLAC_StreamEncoder*, const char*, void (*)(const FLAC_StreamEncoder*, FLAC_uint64, FLAC_uint64, uint32_t, uint32_t, void*), void*) = nullptr;
+    FLAC_bool (*finish)(FLAC_StreamEncoder*) = nullptr;
+    FLAC_bool (*process_interleaved)(FLAC_StreamEncoder*, const FLAC_int32*, uint32_t) = nullptr;
+
+    ~FlacApi() {
+        if (module) FreeLibrary(module);
     }
-    return crc;
-}
 
-uint16_t crc16(const uint8_t* data, size_t size) {
-    uint16_t crc = 0;
-    for (size_t i = 0; i < size; ++i) {
-        crc ^= static_cast<uint16_t>(data[i]) << 8;
-        for (unsigned b = 0; b < 8; ++b) crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x8005) : static_cast<uint16_t>(crc << 1);
+    template<typename T>
+    bool load(T& target, const char* name) {
+        target = reinterpret_cast<T>(GetProcAddress(module, name));
+        return target != nullptr;
     }
-    return crc;
-}
 
-void appendUtf8Uint(std::vector<uint8_t>& out, uint64_t v) {
-    if (v < 0x80) { out.push_back(static_cast<uint8_t>(v)); return; }
-    if (v < 0x800) { out.push_back(static_cast<uint8_t>(0xC0 | (v >> 6))); out.push_back(static_cast<uint8_t>(0x80 | (v & 0x3F))); return; }
-    if (v < 0x10000) { out.push_back(static_cast<uint8_t>(0xE0 | (v >> 12))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 6) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | (v & 0x3F))); return; }
-    if (v < 0x200000) { out.push_back(static_cast<uint8_t>(0xF0 | (v >> 18))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 12) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 6) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | (v & 0x3F))); return; }
-    if (v < 0x4000000) { out.push_back(static_cast<uint8_t>(0xF8 | (v >> 24))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 18) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 12) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 6) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | (v & 0x3F))); return; }
-    out.push_back(static_cast<uint8_t>(0xFC | (v >> 30))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 24) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 18) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 12) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | ((v >> 6) & 0x3F))); out.push_back(static_cast<uint8_t>(0x80 | (v & 0x3F)));
-}
-
-uint8_t sampleRateCode(uint32_t rate, std::vector<uint8_t>& extra) {
-    extra.clear();
-    switch (rate) {
-        case 88200: return 1;
-        case 176400: return 2;
-        case 8000: return 3;
-        case 16000: return 4;
-        case 22050: return 5;
-        case 24000: return 6;
-        case 32000: return 7;
-        case 44100: return 8;
-        case 48000: return 9;
-        case 96000: return 10;
-        case 192000: return 11;
-        default:
-            if (rate % 10 == 0 && rate / 10 <= 65535) {
-                extra.push_back(static_cast<uint8_t>((rate / 10) >> 8));
-                extra.push_back(static_cast<uint8_t>((rate / 10) & 0xFF));
-                return 14;
-            }
-            if (rate / 1000 <= 255 && rate % 1000 == 0) {
-                extra.push_back(static_cast<uint8_t>(rate / 1000));
-                return 12;
-            }
-            if (rate <= 65535) {
-                extra.push_back(static_cast<uint8_t>(rate >> 8));
-                extra.push_back(static_cast<uint8_t>(rate & 0xFF));
-                return 13;
-            }
-            throw std::runtime_error("unsupported DVD-A sample rate for FLAC frame header");
-    }
-}
-
-void putBE16(std::ostream& os, uint16_t v) { os.put(static_cast<char>(v >> 8)); os.put(static_cast<char>(v)); }
-void putBE24(std::ostream& os, uint32_t v) { os.put(static_cast<char>(v >> 16)); os.put(static_cast<char>(v >> 8)); os.put(static_cast<char>(v)); }
-void putBE32(std::ostream& os, uint32_t v) { os.put(static_cast<char>(v >> 24)); os.put(static_cast<char>(v >> 16)); os.put(static_cast<char>(v >> 8)); os.put(static_cast<char>(v)); }
-void putBE64(std::ostream& os, uint64_t v) {
-    for (int i = 7; i >= 0; --i) os.put(static_cast<char>(v >> (i * 8)));
-}
-
-// FLAC frame with independent 24-bit verbatim subframes. This is deliberately
-// simple rather than compression-oriented: the output is lossless and valid on
-// every FLAC decoder, including renderers that are strict about channel layout.
-void writeFrame(std::ofstream& out, const std::vector<int32_t>& pcm, size_t frames,
-                uint32_t channels, uint32_t rate, uint64_t frameNumber) {
-    std::vector<uint8_t> header;
-    header.reserve(32);
-    header.push_back(0xFF); header.push_back(0xF8); // sync + fixed-blocking strategy
-    std::vector<uint8_t> rateExtra;
-    const uint8_t rateCode = sampleRateCode(rate, rateExtra);
-    header.push_back(static_cast<uint8_t>((7u << 4) | rateCode)); // 7 = 16-bit block-size field
-    header.push_back(static_cast<uint8_t>(((channels - 1u) << 4) | 6u)); // independent channels, 24-bit
-    appendUtf8Uint(header, frameNumber);
-    header.push_back(static_cast<uint8_t>((frames - 1) >> 8));
-    header.push_back(static_cast<uint8_t>((frames - 1) & 0xFF));
-    header.insert(header.end(), rateExtra.begin(), rateExtra.end());
-    header.push_back(crc8(header.data(), header.size()));
-    out.write(reinterpret_cast<const char*>(header.data()), static_cast<std::streamsize>(header.size()));
-
-    std::vector<uint8_t> frameBody;
-    frameBody.reserve(frames * channels * 3 + channels);
-    for (uint32_t ch = 0; ch < channels; ++ch) {
-        frameBody.push_back(0x02); // verbatim subframe header
-        for (size_t i = 0; i < frames; ++i) {
-            const int32_t sample = pcm[i * channels + ch];
-            frameBody.push_back(static_cast<uint8_t>((sample >> 16) & 0xFF));
-            frameBody.push_back(static_cast<uint8_t>((sample >> 8) & 0xFF));
-            frameBody.push_back(static_cast<uint8_t>(sample & 0xFF));
+    static std::wstring moduleDirectory() {
+        HMODULE self = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCWSTR>(&moduleDirectory), &self)) {
+            return {};
         }
+        wchar_t path[MAX_PATH]{};
+        const DWORD n = GetModuleFileNameW(self, path, static_cast<DWORD>(std::size(path)));
+        if (!n || n >= std::size(path)) return {};
+        std::wstring result(path, path + n);
+        const auto slash = result.find_last_of(L"\\/");
+        if (slash == std::wstring::npos) return {};
+        result.resize(slash);
+        return result;
     }
-    out.write(reinterpret_cast<const char*>(frameBody.data()), static_cast<std::streamsize>(frameBody.size()));
-    std::vector<uint8_t> crcInput;
-    crcInput.reserve(header.size() - 1 + frameBody.size());
-    crcInput.insert(crcInput.end(), header.begin(), header.end() - 1);
-    crcInput.insert(crcInput.end(), frameBody.begin(), frameBody.end());
-    putBE16(out, crc16(crcInput.data(), crcInput.size()));
+
+    bool load() {
+        const std::wstring dir = moduleDirectory();
+        if (!dir.empty()) {
+            const std::wstring candidate = dir + L"\\libFLAC.dll";
+            module = LoadLibraryW(candidate.c_str());
+        }
+        if (!module) module = LoadLibraryW(L"libFLAC.dll");
+        if (!module) return false;
+
+        const bool ok =
+            load(encoder_new, "FLAC__stream_encoder_new") &&
+            load(encoder_delete, "FLAC__stream_encoder_delete") &&
+            load(set_verify, "FLAC__stream_encoder_set_verify") &&
+            load(set_streamable_subset, "FLAC__stream_encoder_set_streamable_subset") &&
+            load(set_channels, "FLAC__stream_encoder_set_channels") &&
+            load(set_bits_per_sample, "FLAC__stream_encoder_set_bits_per_sample") &&
+            load(set_sample_rate, "FLAC__stream_encoder_set_sample_rate") &&
+            load(set_compression_level, "FLAC__stream_encoder_set_compression_level") &&
+            load(set_blocksize, "FLAC__stream_encoder_set_blocksize") &&
+            load(set_do_mid_side_stereo, "FLAC__stream_encoder_set_do_mid_side_stereo") &&
+            load(set_total_samples_estimate, "FLAC__stream_encoder_set_total_samples_estimate") &&
+            load(init_file, "FLAC__stream_encoder_init_file") &&
+            load(finish, "FLAC__stream_encoder_finish") &&
+            load(process_interleaved, "FLAC__stream_encoder_process_interleaved");
+        if (!ok) {
+            FreeLibrary(module);
+            module = nullptr;
+        }
+        return ok;
+    }
+};
+
+FlacApi& flacApi() {
+    static FlacApi api;
+    static const bool loaded = api.load();
+    (void)loaded;
+    return api;
+}
+
+std::string utf8FromWide(const std::wstring& value) {
+    if (value.empty()) return {};
+    const int needed = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+        value.c_str(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) throw std::runtime_error("unable to convert FLAC output path to UTF-8");
+    std::string result(static_cast<size_t>(needed), '\0');
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+        value.c_str(), static_cast<int>(value.size()), result.data(), needed, nullptr, nullptr)) {
+        throw std::runtime_error("unable to convert FLAC output path to UTF-8");
+    }
+    return result;
+}
+
+int32_t floatToInt24(audio_sample sample) {
+    if (sample <= -1.0f) return -8388608;
+    if (sample >= 1.0f) return 8388607;
+    const double scaled = static_cast<double>(sample) * 8388607.0;
+    return static_cast<int32_t>(std::llround(scaled));
+}
+
+void flacProgress(const FLAC_StreamEncoder*, FLAC_uint64, FLAC_uint64 samplesWritten,
+                  uint32_t, uint32_t, void* clientData) {
+    auto* ctx = static_cast<std::pair<double, const std::function<void(uint32_t)>*>*>(clientData);
+    if (!ctx || !ctx->second || !*ctx->second || ctx->first <= 0.0) return;
+    const double percent = std::clamp(
+        static_cast<double>(samplesWritten) / ctx->first * 100.0, 0.0, 100.0);
+    (*ctx->second)(static_cast<uint32_t>(percent));
 }
 
 }
@@ -115,90 +145,152 @@ bool decode_to_flac(const char* path, t_uint32 subsong, const std::wstring& outp
                     abort_callback& abort, uint32_t& sampleRate, uint32_t& channels,
                     uint32_t& bitsPerSample, uint64_t& totalSamples,
                     const std::function<void(uint32_t)>& progress) {
+    // Open the real DVD-A decoder first.  Some DVD-A program/track variants expose
+    // channel information through the decoder that can differ from the static
+    // file_info metadata (notably downmix / C-LFE variants).  The PCM chunk is the
+    // authoritative format that must be handed to libFLAC.
     service_ptr_t<input_info_reader> infoReader;
     input_entry::g_open_for_info_read(infoReader, nullptr, path, abort);
     file_info_impl info;
     infoReader->get_info(subsong, info, abort);
-    sampleRate = static_cast<uint32_t>(std::max<t_int64>(1, info.info_get_int("samplerate")));
-    channels = static_cast<uint32_t>(std::max<t_int64>(1, info.info_get_int("channels")));
-    bitsPerSample = 24;
-    if (channels > 8) throw std::runtime_error("DVD-Audio has more than 8 channels; FLAC channel mapping is unsupported");
     const double duration = info.get_length();
 
     service_ptr_t<input_decoder> decoder;
     input_entry::g_open_for_decoding(decoder, nullptr, path, abort);
-    decoder->initialize(subsong, input_flag_no_seeking | input_flag_no_looping | input_flag_playback, abort);
+    decoder->initialize(subsong, input_flag_no_looping | input_flag_playback, abort);
 
-    std::ofstream out(outputPath, std::ios::binary | std::ios::trunc);
-    if (!out) throw std::runtime_error("unable to create DVD-A FLAC cache");
-
-    // STREAMINFO block: placeholder total sample count, patched after decoding.
-    out.write("fLaC", 4);
-    out.put(static_cast<char>(0x80)); out.put(static_cast<char>(0x00)); out.put(static_cast<char>(0x22)); // last metadata block, STREAMINFO length 34
-    putBE16(out, 4096); putBE16(out, 4096);
-    putBE24(out, 0); putBE24(out, 0);
-    const std::streamoff streamInfoPayload = out.tellp();
-    uint64_t packed = (static_cast<uint64_t>(sampleRate) << 44) |
-        (static_cast<uint64_t>(channels - 1) << 41) |
-        (static_cast<uint64_t>(bitsPerSample - 1) << 36);
-    putBE64(out, packed); // top 8 bytes contain rate/channels/bps/totalSamples; low 4 are patched below
-    putBE32(out, 0);      // md5 placeholder (first 4 bytes of 16-byte MD5 field)
-    uint8_t md5zero[12]{}; out.write(reinterpret_cast<const char*>(md5zero), 12);
-    const std::streamoff dataStart = out.tellp();
-    (void)dataStart;
-
-    std::vector<int32_t> pcm;
-    pcm.reserve(4096 * channels);
-    uint64_t decoded = 0;
-    uint64_t frameNumber = 0;
+    // Some DVD-A program variants emit one or more setup/priming decoder runs
+    // with a zero-sample chunk before the first real PCM block.  Those chunks
+    // are harmless and the stream format must be taken from the first non-empty
+    // PCM block.  Rejecting the first run here made multichannel/C-LFE tracks
+    // fail before libFLAC was even initialized.
+    audio_chunk_impl_temporary firstChunk;
+    size_t emptyChunks = 0;
     for (;;) {
         abort.check();
-        audio_chunk_impl_temporary chunk;
-        if (!decoder->run(chunk, abort)) break;
+        if (!decoder->run(firstChunk, abort))
+            throw std::runtime_error("DVD-Audio decoder returned no PCM data after " + std::to_string(emptyChunks) + " empty chunk(s)");
+
+        const size_t firstCount = firstChunk.get_sample_count();
+        const unsigned actualChannels = firstChunk.get_channels();
+        const unsigned actualSampleRate = firstChunk.get_srate();
+        if (firstCount && actualChannels && actualSampleRate) break;
+
+        ++emptyChunks;
+        if (emptyChunks >= 64)
+            throw std::runtime_error("DVD-Audio decoder returned only empty/invalid PCM chunks (" + std::to_string(emptyChunks) + ")");
+    }
+
+    const size_t firstCount = firstChunk.get_sample_count();
+    const unsigned actualChannels = firstChunk.get_channels();
+    const unsigned actualSampleRate = firstChunk.get_srate();
+    if (actualChannels > 8)
+        throw std::runtime_error("DVD-Audio decoder returned more than 8 channels; FLAC supports at most 8 channels");
+
+    sampleRate = actualSampleRate;
+    channels = actualChannels;
+    bitsPerSample = 24;
+    totalSamples = 0;
+
+    FlacApi& api = flacApi();
+    if (!api.module)
+        throw std::runtime_error("libFLAC.dll 1.5.x was not found next to foo_sacd_dlna");
+
+    const std::string utf8Path = utf8FromWide(outputPath);
+    FLAC_StreamEncoder* encoder = api.encoder_new();
+    if (!encoder) throw std::runtime_error("FLAC encoder allocation failed");
+
+    bool initialized = false;
+    auto cleanup = [&] {
+        if (initialized && encoder) {
+            api.finish(encoder);
+            initialized = false;
+        }
+        if (encoder) {
+            api.encoder_delete(encoder);
+            encoder = nullptr;
+        }
+        DeleteFileW(outputPath.c_str());
+    };
+
+    if (!api.set_verify(encoder, 1) ||
+        !api.set_streamable_subset(encoder, 1) ||
+        !api.set_channels(encoder, channels) ||
+        !api.set_bits_per_sample(encoder, bitsPerSample) ||
+        !api.set_sample_rate(encoder, sampleRate) ||
+        !api.set_compression_level(encoder, 5) ||
+        !api.set_blocksize(encoder, 4096) ||
+        !api.set_do_mid_side_stereo(encoder, channels == 2 ? 1 : 0)) {
+        cleanup();
+        throw std::runtime_error("unable to configure libFLAC encoder");
+    }
+
+    if (duration > 0.0) {
+        const uint64_t estimate = static_cast<uint64_t>(std::llround(duration * sampleRate));
+        if (estimate) api.set_total_samples_estimate(encoder, estimate);
+    }
+
+    std::pair<double, const std::function<void(uint32_t)>*> progressCtx{
+        duration > 0.0 ? duration * sampleRate : 0.0, &progress};
+
+    const auto initStatus = api.init_file(encoder, utf8Path.c_str(), flacProgress, &progressCtx);
+    if (initStatus != FLAC_INIT_OK) {
+        cleanup();
+        throw std::runtime_error("libFLAC initialization failed");
+    }
+    initialized = true;
+
+    auto processChunk = [&](const audio_chunk& chunk) {
         const size_t count = chunk.get_sample_count();
         const unsigned ch = chunk.get_channels();
-        if (!count || ch != channels) throw std::runtime_error("DVD-A decoder changed channel count during decoding");
-        std::vector<uint8_t> raw(count * channels * 3 + 4);
-        audio_math::convert_to_int24(chunk.get_data(), count * channels, raw.data(), 1.0);
-        for (size_t i = 0; i < count * channels; ++i) {
-            const uint8_t* p = raw.data() + i * 3;
-            int32_t v = static_cast<int32_t>(p[0]) | (static_cast<int32_t>(p[1]) << 8) | (static_cast<int32_t>(p[2]) << 16);
-            if (v & 0x800000) v |= ~0xFFFFFF;
-            pcm.push_back(v);
+        const unsigned sr = chunk.get_srate();
+        if (!count) return;
+        if (ch != channels || sr != sampleRate) {
+            throw std::runtime_error(
+                "DVD-A decoder PCM format changed during stream (expected " +
+                std::to_string(channels) + "ch/" + std::to_string(sampleRate) +
+                "Hz, got " + std::to_string(ch) + "ch/" + std::to_string(sr) + "Hz)");
         }
-        size_t framesAvailable = pcm.size() / channels;
-        while (framesAvailable >= 4096) {
-            std::vector<int32_t> block(pcm.begin(), pcm.begin() + 4096 * channels);
-            writeFrame(out, block, 4096, channels, sampleRate, frameNumber++);
-            pcm.erase(pcm.begin(), pcm.begin() + 4096 * channels);
-            decoded += 4096;
-            framesAvailable -= 4096;
-            if (progress && duration > 0) progress(static_cast<uint32_t>(std::clamp(decoded / duration / sampleRate * 100.0, 0.0, 100.0)));
-        }
-    }
-    if (!pcm.empty()) {
-        const size_t frames = pcm.size() / channels;
-        writeFrame(out, pcm, frames, channels, sampleRate, frameNumber++);
-        decoded += frames;
-    }
-    out.flush();
-    if (!out) throw std::runtime_error("unable to finalize DVD-A FLAC cache");
-    out.close();
 
-    // Patch totalSamples into STREAMINFO. The packed 64-bit value occupies the first
-    // eight bytes of STREAMINFO and is followed by the 16-byte MD5 placeholder.
-    std::fstream patch(outputPath, std::ios::binary | std::ios::in | std::ios::out);
-    if (!patch) throw std::runtime_error("unable to reopen DVD-A FLAC cache");
-    patch.seekp(streamInfoPayload);
-    packed = (static_cast<uint64_t>(sampleRate) << 44) |
-        (static_cast<uint64_t>(channels - 1) << 41) |
-        (static_cast<uint64_t>(bitsPerSample - 1) << 36) |
-        (decoded & 0xFFFFFFFFFULL);
-    putBE64(patch, packed);
-    patch.close();
-    totalSamples = decoded;
-    if (progress) progress(100);
-    return decoded != 0;
+        const audio_sample* samples = chunk.get_data();
+        if (!samples) throw std::runtime_error("DVD-A decoder returned PCM data pointer = null");
+        std::vector<FLAC_int32> pcm(count * channels);
+        for (size_t i = 0; i < pcm.size(); ++i) pcm[i] = floatToInt24(samples[i]);
+        if (!api.process_interleaved(encoder, pcm.data(), static_cast<uint32_t>(count)))
+            throw std::runtime_error("libFLAC failed while encoding DVD-A PCM");
+        totalSamples += count;
+        if (progress && duration > 0.0) {
+            progress(static_cast<uint32_t>(std::clamp(
+                static_cast<double>(totalSamples) / (duration * sampleRate) * 100.0,
+                0.0, 100.0)));
+        }
+    };
+
+    try {
+        processChunk(firstChunk);
+        for (;;) {
+            abort.check();
+            audio_chunk_impl_temporary chunk;
+            if (!decoder->run(chunk, abort)) break;
+            processChunk(chunk);
+        }
+
+        if (!totalSamples)
+            throw std::runtime_error("DVD-Audio decoder produced no PCM samples");
+
+        const bool finishOk = api.finish(encoder);
+        initialized = false;
+        if (!finishOk) {
+            encoder = nullptr;
+            throw std::runtime_error("libFLAC finalization failed");
+        }
+        api.encoder_delete(encoder);
+        encoder = nullptr;
+        if (progress) progress(100);
+        return true;
+    } catch (...) {
+        cleanup();
+        throw;
+    }
 }
-
 }

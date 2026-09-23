@@ -10,7 +10,7 @@
 
 # Alpha 3 L — View menu crash fix
 
-**Critical fix:** all commands exposed by View → SACD DLNA now have GUIDs returned by `get_command()`. This prevents the `uBugCheck()` path that could crash foobar2000 when the View menu was opened. See `BUILD_VALIDATION_0.8_ALPHA3_L.md`.
+**Critical fix:** all commands exposed by View → SACD DLNA now have GUIDs returned by `get_command()`. This prevents the `uBugCheck()` path that could crash foobar2000 when the View menu was opened. See `BUILD.md`.
 
 # foo_sacd_dlna Roadmap — v0.8 Alpha 3 M
 

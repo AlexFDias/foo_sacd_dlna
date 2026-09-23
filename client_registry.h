@@ -66,6 +66,16 @@ public:
         e.lastSeen = now;
     }
 
+    // Returns true when this peer already owns at least one logical audio stream.
+    // A renderer may open additional HTTP Range connections while seeking/prefetching
+    // the same item; those connections must not consume another logical stream slot.
+    bool hasActiveStream(const std::string& ip) const {
+        if (ip.empty()) return false;
+        std::lock_guard<std::mutex> g(m_mutex);
+        const auto it = m_clients.find(ip);
+        return it != m_clients.end() && it->second.activeStreams != 0;
+    }
+
     void streamEnded(const std::string& ip, Clock::time_point now) {
         if (ip.empty()) return;
         std::lock_guard<std::mutex> g(m_mutex);

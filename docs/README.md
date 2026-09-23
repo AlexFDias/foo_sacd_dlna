@@ -1,6 +1,6 @@
 # foo_sacd_dlna — Documentation Index
 
-This directory contains the consolidated project documentation. Historical build, audit and release notes remain in the repository root because they record the evolution of the Alpha 3 series.
+This directory contains the consolidated project documentation. The source tree no longer carries obsolete per-revision build/audit notes.
 
 ## Authoritative documents
 
@@ -10,9 +10,8 @@ This directory contains the consolidated project documentation. Historical build
 - `USER_GUIDE.md` — installation, configuration and operating guide.
 - `DEVELOPER_GUIDE.md` — build, source tree, testing and contribution guidance.
 - `VALIDATION_STATUS.md` — explicit distinction between source-level features, historical build validation and hardware validation still required.
+- `../FLAC_RUNTIME.md` — official libFLAC 1.5.x integration and DVD-Audio cache validation.
 
-## Historical records
+### v7 Range/stream limiter behavior
 
-The repository root contains the detailed historical record, including `CHANGELOG.md`, `BUILD.md`, `BUILD_VALIDATION_*.md`, `CODE_AUDIT_*.md`, `RELEASE_NOTES_*.md`, `WTL_*.md`, `NETWORK_*.md`, `HARDWARE_VALIDATION.md`, `RELEASE_CHECKLIST.md` and related files.
-
-Those files are retained as historical evidence and should not be interpreted as a single current build-validation statement. The consolidated validation status is in `VALIDATION_STATUS.md`.
+A single renderer may use multiple HTTP Range connections during seeking or prefetch. These connections are treated as one logical active stream when they originate from the same already-streaming peer, so the Max Streams limit does not reject a renderer's own seek/prefetch connection with HTTP 503.
