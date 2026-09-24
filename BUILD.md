@@ -1,84 +1,84 @@
-# BUILD.md — Compilar o foo_sacd_dlna no Windows
+# BUILD.md — Building foo_sacd_dlna on Windows
 
-Este documento explica, passo a passo, como preparar um PC Windows para **compilar, testar e diagnosticar** o `foo_sacd_dlna`.
+This document explains, step by step, how to prepare a Windows PC to **build, test and diagnose** `foo_sacd_dlna`. For the Portuguese version, see `BUILD.pt-PT.md`.
 
-## Estado de build desta árvore
+## Build status of this tree
 
-Esta é a **1.0.0**, a primeira revisão em que código, `.vcxproj` e documentação (`BUILD.md`, `CHANGELOG.md`, `docs/`) foram reconciliados entre si — ver a entrada "1.0.0 — first consolidated release" no topo do `CHANGELOG.md` para a lista concreta do que estava inconsistente e foi corrigido. Não é uma reescrita: é a mesma base de código Alpha (histórico completo em `CHANGELOG.md`), agora sem as contradições entre revisões que se tinham acumulado.
+This is **1.0.0**, the first revision where the code, `.vcxproj` and documentation (`BUILD.md`, `CHANGELOG.md`, `docs/`) have been reconciled with each other — see the "1.0.0 — first consolidated release" entry at the top of `CHANGELOG.md` for the concrete list of what was inconsistent and got fixed. It is not a rewrite: it is the same Alpha codebase (full history in `CHANGELOG.md`), now without the contradictions between revisions that had accumulated.
 
-Isto **não** é uma afirmação de build/hardware validado — não existe aqui um toolchain Windows/MSVC para compilar esta árvore. O histórico de builds Windows anteriores (revisões *Alpha 3 E* a *Alpha 3 U*) está em `CHANGELOG.md` e não prova que a 1.0.0 compila; ver `docs/VALIDATION_STATUS.md` para o que está e não está confirmado.
+This is **not** a claim of a validated build/hardware pass — there is no Windows/MSVC toolchain here to build this tree. The history of earlier Windows builds (revisions *Alpha 3 E* through *Alpha 3 U*) is in `CHANGELOG.md` and does not prove that 1.0.0 builds; see `docs/VALIDATION_STATUS.md` for what is and isn't confirmed.
 
-Em contrapartida, esta revisão **já foi exercitada com evidência real de campo**: os logs de diagnóstico de um teste com foobar2000 real, um renderer T+A e a VLC mostraram que o único motivo, consistente e sem excepções, pelo qual a conversão DVD-Audio → FLAC falhava era o `libFLAC.dll` não estar junto do `foo_sacd_dlna.dll` instalado — não um defeito no código de validação FLAC ou no encoder. Ver o passo 15 abaixo e `FLAC_RUNTIME.md`.
+On the other hand, this revision **has already been exercised with real field evidence**: diagnostic logs from a test with a real foobar2000 instance, a T+A renderer and VLC showed that the single, consistent, exception-free reason DVD-Audio → FLAC conversion was failing was that `libFLAC.dll` was not sitting next to the installed `foo_sacd_dlna.dll` — not a defect in the FLAC validation code or the encoder. See step 15 below and `FLAC_RUNTIME.md`.
 
-O build x64 usa WTL através de `WTL.props`. A localização pode ser fornecida por `WTLIncludeDir`, `WTL_INCLUDE` ou `WTL_ROOT` — ver o passo 8.
+The x64 build uses WTL through `WTL.props`. The location can be supplied via `WTLIncludeDir`, `WTL_INCLUDE` or `WTL_ROOT` — see step 8.
 
 
-## 1. O que é necessário para compilar
+## 1. What you need to build
 
-### Software obrigatório
+### Required software
 
 1. **Windows 64-bit**
-2. **Visual Studio 2022** ou Build Tools 2022
-3. Workload **Desktop development with C++**
-4. **MSVC C++ Build Tools** para x64/x86
+2. **Visual Studio 2022** or Build Tools 2022
+3. **Desktop development with C++** workload
+4. **MSVC C++ Build Tools** for x64/x86
 5. **Windows SDK**
 6. **foobar2000 SDK 2025-03-07**
-7. **foobar2000 64-bit** para testar o componente
-8. **foo_input_sacd** para testar SACD ISO
+7. **foobar2000 64-bit** to test the component
+8. **foo_input_sacd** to test SACD ISO
 
-O SDK usado neste projecto é o **2025-03-07**. A página oficial do foobar2000 indica que essa versão inclui projectos para Visual Studio 2019/2022. O changelog também indica que esta versão mantém C++17 em determinados projectos da SDK. 
+The SDK used in this project is **2025-03-07**. The official foobar2000 page states that this version includes project files for Visual Studio 2019/2022. The changelog also states that this version keeps C++17 in certain SDK projects.
 
-- SDK oficial: https://www.foobar2000.org/SDK
-- Changelog da SDK: https://www.foobar2000.org/changelog-sdk
+- Official SDK: https://www.foobar2000.org/SDK
+- SDK changelog: https://www.foobar2000.org/changelog-sdk
 
-### Software opcional, mas recomendado
+### Optional but recommended software
 
 - Git for Windows
 - 7-Zip
-- Python 3.x — para os scripts de diagnóstico DLNA
-- Wireshark — para analisar SSDP/HTTP
+- Python 3.x — for the DLNA diagnostic scripts
+- Wireshark — for analyzing SSDP/HTTP
 - Windows Terminal
 
 ---
 
-## 2. Hardware recomendado para a máquina de desenvolvimento
+## 2. Recommended hardware for the development machine
 
-Para **compilar** o plugin, não é necessário hardware especial.
+No special hardware is needed to **build** the plugin.
 
-| Componente | Mínimo prático | Recomendado |
+| Component | Practical minimum | Recommended |
 |---|---|---|
-| CPU | 4 threads | 4–8+ núcleos físicos |
-| RAM | 8 GB | 16 GB ou mais |
-| Armazenamento | 20 GB livres | 40 GB+ num SSD/NVMe |
-| GPU | integrada | integrada é suficiente |
-| Rede | 100 Mbps | Gigabit Ethernet |
+| CPU | 4 threads | 4–8+ physical cores |
+| RAM | 8 GB | 16 GB or more |
+| Storage | 20 GB free | 40 GB+ on SSD/NVMe |
+| GPU | integrated | integrated is enough |
+| Network | 100 Mbps | Gigabit Ethernet |
 
-A Microsoft indica actualmente para Visual Studio 2022 um mínimo de 4 GB de RAM, processador x64/ARM64 e, para soluções profissionais típicas, 16 GB de RAM recomendados; as instalações típicas necessitam de 20–50 GB livres e a Microsoft recomenda SSD.
+Microsoft currently documents a minimum of 4 GB RAM for Visual Studio 2022, an x64/ARM64 processor, and, for typical professional solutions, 16 GB of RAM recommended; typical installs need 20–50 GB free and Microsoft recommends an SSD.
 
-Para este projecto, **16 GB de RAM + SSD/NVMe** é uma configuração confortável, sobretudo quando se instala o Visual Studio, símbolos, SDKs e ferramentas adicionais.
+For this project, **16 GB RAM + SSD/NVMe** is a comfortable configuration, especially once Visual Studio, symbols, SDKs and additional tools are installed.
 
 ---
 
-## 3. Instalar o Visual Studio 2022
+## 3. Install Visual Studio 2022
 
-Descarrega o Visual Studio 2022 pela Microsoft:
+Download Visual Studio 2022 from Microsoft:
 
 https://visualstudio.microsoft.com/downloads/
 
-Pode ser usada a edição **Community**, que é suficiente para este projecto.
+The **Community** edition can be used and is sufficient for this project.
 
-No instalador selecciona:
+In the installer, select:
 
 ```text
 Workloads
 └── Desktop development with C++
 ```
 
-Este workload inclui os componentes essenciais de C++ para Windows, incluindo MSBuild e as ferramentas de build C++. A documentação Microsoft identifica o workload como `Microsoft.VisualStudio.Workload.VCTools`.
+This workload includes the essential C++ components for Windows, including MSBuild and the C++ build tools. Microsoft's documentation identifies the workload as `Microsoft.VisualStudio.Workload.VCTools`.
 
-### Confirmar os componentes
+### Confirm the components
 
-Na instalação, confirma pelo menos:
+During installation, confirm at least:
 
 ```text
 ✓ MSVC C++ x64/x86 build tools
@@ -87,19 +87,19 @@ Na instalação, confirma pelo menos:
 ✓ C++ core tools
 ```
 
-O Windows SDK é instalado normalmente com o workload de desenvolvimento desktop C++.
+The Windows SDK is normally installed together with the C++ desktop development workload.
 
 ---
 
-## 4. Requisitos actuais do Visual Studio
+## 4. Current Visual Studio requirements
 
-Para a documentação de referência:
+For the reference documentation:
 
-https://learn.microsoft.com/pt-pt/visualstudio/releases/2022/system-requirements
+https://learn.microsoft.com/en-us/visualstudio/releases/2022/system-requirements
 
-Actualmente, a Microsoft documenta suporte para versões 64-bit do Windows 11 e Windows Server suportado pela edição em causa. O Visual Studio 2022 requer .NET Framework 4.8 para funcionar e o instalador utiliza WebView2 quando necessário.
+Microsoft currently documents support for 64-bit versions of Windows 11 and Windows Server supported by the relevant edition. Visual Studio 2022 requires .NET Framework 4.8 to run, and the installer uses WebView2 when needed.
 
-Para este projecto, a escolha recomendada é simples:
+For this project, the recommended choice is simple:
 
 ```text
 Windows 11 x64
@@ -109,27 +109,27 @@ Desktop development with C++
 
 ---
 
-## 5. Obter a SDK do foobar2000
+## 5. Get the foobar2000 SDK
 
-A SDK **não deve ser incluída automaticamente neste repositório** sem verificar os termos de distribuição.
+The SDK **should not be bundled automatically in this repository** without checking its distribution terms.
 
-Descarrega-a directamente da página oficial:
+Download it directly from the official page:
 
 https://www.foobar2000.org/SDK
 
-A versão actualmente publicada na página oficial é:
+The version currently published on the official page is:
 
 ```text
 SDK 2025-03-07
 ```
 
-A página oficial indica explicitamente project files para **Visual Studio 2019/2022**.
+The official page explicitly states project files for **Visual Studio 2019/2022**.
 
 ---
 
-## 6. Estrutura de pastas recomendada
+## 6. Recommended folder layout
 
-Uma estrutura simples é:
+A simple layout is:
 
 ```text
 C:\dev\
@@ -149,126 +149,126 @@ C:\dev\
     └── ...
 ```
 
-Mantém os dois projectos no mesmo nível para simplificar as referências relativas usadas pela solução.
+Keep the two projects at the same level, to simplify the relative references used by the solution.
 
 ---
 
-## 7. Abrir o projecto
+## 7. Open the project
 
-Abra:
+Open:
 
 ```text
 foo_sacd_dlna.sln
 ```
 
-no Visual Studio 2022.
+in Visual Studio 2022.
 
-Selecciona:
+Select:
 
 ```text
 Configuration: Release
 Platform: x64
 ```
 
-Para depuração:
+For debugging:
 
 ```text
 Configuration: Debug
 Platform: x64
 ```
 
-Não uses `Win32`/x86 para este projecto.
+Do not use `Win32`/x86 for this project.
 
 ---
 
-## 8. Confirmar os caminhos da SDK
+## 8. Confirm the SDK paths
 
-Se aparecer:
+If you see:
 
 ```text
 cannot open include file ...
 ```
 
-abre:
+open:
 
 ```text
 Project → Properties
 ```
 
-E confirma:
+and confirm:
 
 ```text
 C/C++ → Additional Include Directories
 ```
 
-bem como:
+as well as:
 
 ```text
 Linker → Additional Library Directories
 ```
 
-As pastas da SDK, `pfc`, `shared` e restantes componentes têm de corresponder à SDK que extraíste.
+The SDK, `pfc`, `shared` and other component folders must match the SDK you extracted.
 
-Não assumes um caminho fixo como `C:\foobar2000-sdk`. Usa o caminho real da tua instalação.
+Do not assume a fixed path such as `C:\foobar2000-sdk`. Use the actual path of your installation.
 
 ---
 
-## 9. Compilar
+## 9. Build
 
-No Visual Studio:
+In Visual Studio:
 
 ```text
 Build → Build Solution
 ```
 
-ou:
+or:
 
 ```text
 Ctrl + Shift + B
 ```
 
-Configuração inicial recomendada:
+Recommended initial configuration:
 
 ```text
 Release | x64
 ```
 
-Uma compilação bem sucedida deve criar a DLL do componente no directório de output configurado pelo projecto.
+A successful build should produce the component's DLL in the project's configured output directory.
 
 ---
 
-## 10. Compilar a partir da linha de comandos
+## 10. Build from the command line
 
-Abre:
+Open:
 
 ```text
 Developer Command Prompt for VS 2022
 ```
 
-e executa:
+and run:
 
 ```powershell
 msbuild .\foo_sacd_dlna.sln /m /p:Configuration=Release /p:Platform=x64
 ```
 
-Build limpo:
+Clean build:
 
 ```powershell
 msbuild .\foo_sacd_dlna.sln /t:Clean /p:Configuration=Release /p:Platform=x64
 msbuild .\foo_sacd_dlna.sln /t:Build /m /p:Configuration=Release /p:Platform=x64
 ```
 
-Se `msbuild` não for encontrado, estás provavelmente a usar uma consola normal em vez da Developer Command Prompt ou Developer PowerShell do Visual Studio.
+If `msbuild` is not found, you are probably using a regular shell instead of the Visual Studio Developer Command Prompt or Developer PowerShell.
 
 ---
 
-## 11. Preparar um foobar2000 de teste
+## 11. Set up a test foobar2000
 
-É altamente recomendado utilizar uma **instalação/perfil separado do foobar2000** para o desenvolvimento.
+It is strongly recommended to use a **separate foobar2000 install/profile** for development.
 
-Não testes uma DLL Alpha directamente na tua instalação principal de música.
+Do not test an Alpha DLL directly on your main music installation.
 
-O ambiente de teste deve conter:
+The test environment should contain:
 
 ```text
 foobar2000 x64
@@ -276,35 +276,35 @@ foo_input_sacd
 foo_sacd_dlna
 ```
 
-Depois reinicia o foobar2000.
+Then restart foobar2000.
 
 ---
 
-## 12. Confirmar a dependência SACD
+## 12. Confirm the SACD dependency
 
-Abre:
+Open:
 
 ```text
 File → Preferences → Tools → SACD DLNA
 ```
 
-Deve aparecer algo semelhante a:
+You should see something like:
 
 ```text
 foo_input_sacd: INSTALLED
 ```
 
-O `foo_input_sacd` é obrigatório para a parte **SACD ISO → DSD**.
+`foo_input_sacd` is required for the **SACD ISO → DSD** part.
 
-O componente foi desenhado para não depender de funções privadas da DLL do SACD Decoder. O objectivo é usar as interfaces públicas do foobar2000 para pedir o fluxo DSD ao decoder instalado, permitindo actualizar o decoder independentemente.
+The component was designed to not depend on private functions of the SACD Decoder DLL. The goal is to use foobar2000's public interfaces to request the DSD stream from the installed decoder, allowing the decoder to be updated independently.
 
 ---
 
-## 13. Primeiro teste: DSF
+## 13. First test: DSF
 
-Antes de testar SACD ISO, usa uma faixa `.dsf` que já saibas estar correcta.
+Before testing SACD ISO, use a `.dsf` track that you already know is correct.
 
-Isto testa:
+This tests:
 
 ```text
 Music Library
@@ -316,19 +316,19 @@ UPnP/DLNA
 T+A SDX 3100 HV
 ```
 
-Se o DSF não funcionar, não vale a pena começar por investigar o SACD Decoder.
+If DSF doesn't work, it isn't worth starting by investigating the SACD Decoder.
 
 ---
 
-## 14. Segundo teste: SACD ISO
+## 14. Second test: SACD ISO
 
-Depois de DSF funcionar, testa:
+After DSF works, test:
 
 ```text
 Album.iso
 ```
 
-O caminho esperado é:
+The expected path is:
 
 ```text
 SACD ISO
@@ -344,21 +344,21 @@ HTTP/DLNA
 SDX 3100 HV
 ```
 
-A ISO original não deve ser alterada.
+The original ISO must not be modified.
 
 ---
 
-## 15. Terceiro teste: DVD-Audio → FLAC
+## 15. Third test: DVD-Audio → FLAC
 
-Depois de DSF e SACD ISO funcionarem, testa uma faixa DVD-Audio.
+After DSF and SACD ISO work, test a DVD-Audio track.
 
-Isto exige três coisas, todas obrigatórias:
+This requires three things, all mandatory:
 
-1. **`foo_input_dvda`** instalado (o decoder DVD-Audio).
-2. A extensão/origem DVD-Audio incluída em **Shared formats**.
-3. **`libFLAC.dll` (Win64, 1.5.x) copiado para a mesma pasta onde está instalado `foo_sacd_dlna.dll`** no perfil de teste do foobar2000 — normalmente `%AppData%\foobar2000-v2\user-components\foo_sacd_dlna\` ou equivalente. A DLL está em `third_party\libFLAC\Win64\libFLAC.dll` no código-fonte; o build já a copia para a pasta de output do projecto (`$(OutDir)`), mas **isso não é a pasta de componentes do foobar2000** — tens de a copiar tu, à mão, para lá.
+1. **`foo_input_dvda`** installed (the DVD-Audio decoder).
+2. The DVD-Audio extension/source included in **Shared formats**.
+3. **`libFLAC.dll` (Win64, 1.5.x) copied to the same folder where `foo_sacd_dlna.dll` is installed** in the foobar2000 test profile — usually `%AppData%\foobar2000-v2\user-components\foo_sacd_dlna\` or equivalent. The DLL is at `third_party\libFLAC\Win64\libFLAC.dll` in the source tree; the build already copies it to the project's output folder (`$(OutDir)`), but **that is not foobar2000's components folder** — you have to copy it there yourself, by hand.
 
-Este último passo é fácil de esquecer porque é uma cópia manual separada da compilação, e esquecê-lo produz um sintoma enganador: todas as faixas DVD-Audio falham, uma a uma, com HTTP 503 no renderer (e HTTP 404/503 na VLC), sem qualquer indicação óbvia de que falta um ficheiro. A partir desta revisão, se a DLL não for encontrada, o foobar2000 mostra logo no arranque, na **Consola**, uma linha do género:
+This last step is easy to forget because it's a manual copy separate from the build, and forgetting it produces a misleading symptom: every DVD-Audio track fails, one at a time, with HTTP 503 on the renderer (and HTTP 404/503 in VLC), with no obvious indication that a file is missing. As of this revision, if the DLL is not found, foobar2000 shows a line like this right at startup, in the **Console**:
 
 ```text
 SACD DLNA: libFLAC.dll was not found at "...\libFLAC.dll" -- DVD-Audio to FLAC
@@ -366,9 +366,9 @@ conversion will fail for every track until it is copied there (see FLAC_RUNTIME.
 DSD/SACD sharing is not affected.
 ```
 
-Se vires esta linha, o teste vai falhar sempre — resolve isto primeiro, antes de investigar mais nada.
+If you see this line, the test will always fail — fix this first, before investigating anything else.
 
-O caminho esperado, uma vez a DLL presente, é:
+The expected path, once the DLL is present, is:
 
 ```text
 DVD-Audio
@@ -377,42 +377,43 @@ foo_input_dvda
    ↓
 PCM 24-bit
    ↓
-libFLAC 1.5.x (encoder real, carregado dinamicamente)
+libFLAC 1.5.x (real encoder, loaded dynamically)
    ↓
-cache .flac
+.flac cache
    ↓
 HTTP/DLNA
    ↓
 SDX 3100 HV
 ```
 
-Confirma a cache gerada com as ferramentas oficiais da distribuição FLAC 1.5.0 Win64:
+Confirm the generated cache with the official tools from the FLAC 1.5.0 Win64 distribution:
 
 ```powershell
-flac.exe -t caminho\para\a\cache\<id>.flac
-metaflac.exe --list caminho\para\a\cache\<id>.flac
+flac.exe -t path\to\the\cache\<id>.flac
+metaflac.exe --list path\to\the\cache\<id>.flac
 ```
 
-`flac -t` deve reportar o ficheiro como válido; `metaflac --list` deve mostrar o sample rate, canais, bits e total de samples esperados para a faixa. Ver `FLAC_RUNTIME.md` para os detalhes do encoder e da validação de cache.
+`flac -t` should report the file as valid; `metaflac --list` should show the sample rate, channels, bits and total samples expected for the track. See `FLAC_RUNTIME.md` for encoder and cache-validation details.
+
 ---
 
-## 16. Testar o servidor DLNA sem o SDX
+## 16. Test the DLNA server without the SDX
 
-O projecto inclui scripts em:
+The project includes scripts under:
 
 ```text
 tools\
 ```
 
-O script de smoke test pode verificar a parte de MediaServer sem depender imediatamente do T+A:
+The smoke-test script can check the MediaServer part without immediately depending on the T+A unit:
 
 ```powershell
 python .\tools\dlna_smoke_test.py 192.168.1.20 8192
 ```
 
-Substitui `192.168.1.20` pelo IP do PC que executa o foobar2000.
+Replace `192.168.1.20` with the IP of the PC running foobar2000.
 
-O teste verifica elementos como:
+The test checks elements such as:
 
 ```text
 /device.xml
@@ -423,7 +424,7 @@ ConnectionManager::GetProtocolInfo
 media resource
 ```
 
-Para pedir também o recurso de áudio:
+To also request the audio resource:
 
 ```powershell
 python .\tools\dlna_smoke_test.py 192.168.1.20 8192 --get
@@ -431,9 +432,9 @@ python .\tools\dlna_smoke_test.py 192.168.1.20 8192 --get
 
 ---
 
-## 17. Testar com o T+A SDX 3100 HV
+## 17. Test with the T+A SDX 3100 HV
 
-A rede recomendada é:
+The recommended network layout is:
 
 ```text
 PC / foobar2000
@@ -447,23 +448,23 @@ Gigabit Switch
 T+A SDX 3100 HV
 ```
 
-O estado da interface deve distinguir:
+The interface's status should distinguish:
 
 ```text
 DLNA: BROADCASTING / ACTIVE
 ```
 
-de:
+from:
 
 ```text
 Audio stream: ACTIVE / TRANSMITTING
 ```
 
-O primeiro indica que o servidor está disponível/discoverable.
+The first means the server is available/discoverable.
 
-O segundo indica que existe uma transferência HTTP de áudio activa.
+The second means there is an active HTTP audio transfer.
 
-Durante reprodução, procura algo como:
+During playback, look for something like:
 
 ```text
 T+A SDX: DETECTED / STREAMING
@@ -473,9 +474,9 @@ TX: ~22–24 Mbit/s
 
 ---
 
-## 18. Requisitos de rede
+## 18. Network requirements
 
-Débito aproximado do payload DSD estéreo:
+Approximate payload throughput for stereo DSD:
 
 ```text
 DSD64   ≈ 5.64 Mbit/s
@@ -483,53 +484,53 @@ DSD128  ≈ 11.29 Mbit/s
 DSD256  ≈ 22.58 Mbit/s
 ```
 
-TCP/IP, HTTP e UPnP acrescentam overhead.
+TCP/IP, HTTP and UPnP add overhead.
 
-Uma Ethernet de 100 Mbps é suficiente em teoria, mas para DSD256 a configuração recomendada é:
+100 Mbps Ethernet is theoretically enough, but for DSD256 the recommended setup is:
 
 ```text
 Gigabit Ethernet
 ```
 
-A razão é simples: o objectivo não é apenas ter largura de banda suficiente, mas também **ter margem** para outros dispositivos e congestionamento temporário.
+The reason is simple: the goal isn't just to have enough bandwidth, but also to **have headroom** for other devices and temporary congestion.
 
 ---
 
 ## 19. Windows Firewall
 
-Para o funcionamento local de DLNA, o componente usa normalmente:
+For local DLNA operation, the component normally uses:
 
 ```text
 UDP 1900
 ```
 
-para SSDP e:
+for SSDP, and:
 
 ```text
 TCP 8192
 ```
 
-para HTTP/media, por defeito.
+for HTTP/media, by default.
 
-Se mudares a porta nas Preferências, ajusta a regra do firewall.
+If you change the port in Preferences, adjust the firewall rule accordingly.
 
-Para o primeiro teste, permite o foobar2000 na rede **Private** do Windows.
+For the first test, allow foobar2000 on Windows' **Private** network.
 
-Não exponhas este servidor DLNA directamente à Internet.
+Do not expose this DLNA server directly to the Internet.
 
 ---
 
-## 20. Testar HTTP Range
+## 20. Test HTTP Range
 
-O renderer pode fazer pedidos parciais:
+The renderer may make partial requests:
 
 ```http
 Range: bytes=...
 ```
 
-Isto é relevante para seek e determinados padrões de reprodução DLNA.
+This matters for seeking and certain DLNA playback patterns.
 
-A resposta deve manter correctamente:
+The response should correctly keep:
 
 ```text
 206 Partial Content
@@ -538,15 +539,15 @@ Content-Length
 Accept-Ranges: bytes
 ```
 
-quando um pedido Range válido é recebido.
+when a valid Range request is received.
 
 ---
 
-## 21. Diagnóstico com Wireshark
+## 21. Diagnostics with Wireshark
 
-Para problemas de DLNA, Wireshark é extremamente útil.
+For DLNA problems, Wireshark is extremely useful.
 
-Filtros úteis:
+Useful filters:
 
 ```text
 ssdp
@@ -560,13 +561,13 @@ http
 tcp.port == 8192
 ```
 
-ou apenas o SDX:
+or just the SDX unit:
 
 ```text
-ip.addr == <IP-do-SDX>
+ip.addr == <SDX-IP>
 ```
 
-Uma sessão típica deverá parecer-se com:
+A typical session should look like this:
 
 ```text
 SDX → SSDP M-SEARCH
@@ -578,89 +579,89 @@ SDX → SOAP GetProtocolInfo
 SDX → GET /media/<id>.dsf
 ```
 
-O último pedido é o ponto em que começa a transmissão real do áudio.
+The last request is the point where actual audio transmission starts.
 
 ---
 
-## 22. Testar estabilidade DSD256
+## 22. Test DSD256 stability
 
-Configuração inicial:
+Initial configuration:
 
 ```text
 Stability Mode: ON
 Pre-buffer: 15 s
 ```
 
-Se a rede estiver muito ocupada:
+If the network is quite busy:
 
 ```text
 Pre-buffer: 20–30 s
 ```
 
-Para redes muito instáveis:
+For very unstable networks:
 
 ```text
 Pre-buffer: 30–60 s
 ```
 
-Isto absorve variações temporárias. Não resolve uma ligação que fique permanentemente abaixo do débito necessário.
+This absorbs temporary variations. It does not fix a connection that permanently stays below the required throughput.
 
-Para DSD256, 15 segundos correspondem a aproximadamente **42,3 MB** de payload DSD estéreo.
+For DSD256, 15 seconds corresponds to approximately **42.3 MB** of stereo DSD payload.
 
 ---
 
-## 23. Testar cache SACD
+## 23. Test the SACD cache
 
-Quando uma ISO é usada, o projecto pode criar uma cache DSF.
+When an ISO is used, the project can create a DSF cache.
 
-O comportamento pretendido é:
+The intended behavior is:
 
 ```text
-Primeiro acesso
+First access
 ISO → DSD → DSF cache
 
-Acessos seguintes
+Subsequent accesses
 DSF cache → DLNA
 ```
 
-A cache deve ser invalidada quando o source ou os parâmetros relevantes mudam.
+The cache must be invalidated when the source or relevant parameters change.
 
-O objectivo é evitar que a conversão SACD seja repetida desnecessariamente e, ao mesmo tempo, desacoplar a descodificação da velocidade do cliente DLNA.
-
----
-
-## 24. Teste de cancelamento/concurrency
-
-Durante desenvolvimento, testa situações como:
-
-1. iniciar uma faixa;
-2. mudar rapidamente para outra;
-3. cancelar enquanto uma ISO está a ser preparada;
-4. abrir duas faixas/clients de forma concorrente;
-5. desligar/reiniciar o renderer durante um streaming.
-
-O componente deve cancelar tarefas antigas sem deixar ficheiros DSF incompletos a serem servidos como válidos.
+The goal is to avoid repeating SACD conversion unnecessarily while also decoupling decoding from the DLNA client's speed.
 
 ---
 
-## 25. Desenvolvimento no Visual Studio
+## 24. Cancellation/concurrency test
 
-Para depuração podes configurar o executável do foobar2000 como aplicação de arranque:
+During development, test scenarios such as:
+
+1. starting a track;
+2. quickly switching to another;
+3. cancelling while an ISO is being prepared;
+4. opening two tracks/clients concurrently;
+5. turning off/restarting the renderer during streaming.
+
+The component must cancel old tasks without leaving incomplete DSF files being served as valid.
+
+---
+
+## 25. Development in Visual Studio
+
+For debugging you can set the foobar2000 executable as the startup application:
 
 ```text
 Debug → foo_sacd_dlna Properties → Debugging
 ```
 
-Exemplo:
+Example:
 
 ```text
 Executable:
 C:\...\foobar2000.exe
 ```
 
-O caminho deve apontar para a tua instalação de teste.
+The path should point to your test installation.
 
-Áreas especialmente úteis para breakpoints:
+Areas especially useful for breakpoints:
 
 ```text
 dlna_server.cpp
@@ -672,13 +673,13 @@ ui_element.cpp
 
 ---
 
-## 26. Testes recomendados por ordem
+## 26. Recommended test order
 
-Para reduzir o número de variáveis, testa por esta ordem:
+To reduce the number of variables, test in this order:
 
 ```text
-1. Compilar DLL
-2. Carregar DLL no foobar2000
+1. Build the DLL
+2. Load the DLL in foobar2000
 3. Preferences
 4. foo_input_sacd detection
 5. SSDP
@@ -687,36 +688,36 @@ Para reduzir o número de variáveis, testa por esta ordem:
 8. BrowseMetadata
 9. DSF HTTP GET
 10. HTTP Range
-11. DSF no SDX
+11. DSF on the SDX
 12. SACD ISO
 13. DSF cache
-14. libFLAC.dll presente (ver passo 15) + DVD-Audio -> FLAC
-15. flac.exe -t / metaflac.exe --list na cache gerada
+14. libFLAC.dll present (see step 15) + DVD-Audio -> FLAC
+15. flac.exe -t / metaflac.exe --list on the generated cache
 16. DSD64
 17. DSD128
 18. DSD256
-19. estabilidade/rede congestionada
+19. stability/congested network
 20. gapless
 21. artwork
-22. reprodução longa
+22. long playback
 ```
 
 ---
 
 ## 27. CI / GitHub Actions
 
-O projecto inclui um workflow em `.github/workflows/build.yml` que compila Debug e Release x64 e publica `foo_sacd_dlna.dll` + `libFLAC.dll` como artefacto.
+The project includes a workflow at `.github/workflows/build.yml` that builds Debug and Release x64 and publishes `foo_sacd_dlna.dll` + `libFLAC.dll` as an artifact.
 
-**Antes de correr, tens de configurar duas repository variables** (Settings → Secrets and variables → Actions → Variables), porque a SDK do foobar2000 e o WTL não são distribuídos neste repositório (ver secção 5):
+**Before running it, you must configure two repository variables** (Settings → Secrets and variables → Actions → Variables), because the foobar2000 SDK and WTL are not distributed in this repository (see section 5):
 
 ```text
-FOOBAR2000_SDK_URL   URL directo do arquivo da SDK (ver https://www.foobar2000.org/SDK)
-WTL_URL              URL directo de um arquivo WTL contendo include\atlapp.h
+FOOBAR2000_SDK_URL   direct URL to the SDK archive (see https://www.foobar2000.org/SDK)
+WTL_URL              direct URL to a WTL archive containing include\atlapp.h
 ```
 
-Sem estas variáveis definidas, o workflow falha logo no primeiro passo com uma mensagem clara, em vez de falhar de forma confusa mais tarde. Confirma que os dois URLs ainda são válidos antes de depender deste workflow — páginas de download oficiais mudam de versão em versão.
+Without these variables set, the workflow fails right at the first step with a clear message, instead of failing confusingly later. Confirm both URLs are still valid before relying on this workflow — official download pages change from version to version.
 
-Um build automático deve produzir, no mínimo:
+An automated build should produce, at minimum:
 
 ```text
 BUILD: PASS
@@ -724,15 +725,15 @@ ARTIFACT: foo_sacd_dlna
 HARDWARE VALIDATION: NOT RUN
 ```
 
-Um build verde no GitHub Actions **não prova compatibilidade com o T+A**.
+A green build in GitHub Actions **does not prove T+A compatibility**.
 
-A validação física tem de ser feita com um SDX 3100 HV real e com o firmware exacto que estiver instalado.
+Physical validation has to be done with a real SDX 3100 HV unit, with whatever firmware is actually installed.
 
 ---
 
-## 28. Informações a guardar em cada release
+## 28. Information to record for every release
 
-Regista sempre:
+Always record:
 
 ```text
 foo_sacd_dlna version
@@ -747,7 +748,7 @@ Windows version
 T+A SDX firmware version
 ```
 
-Exemplo:
+Example:
 
 ```text
 foo_sacd_dlna: 1.0.0
@@ -759,9 +760,9 @@ Platform: x64
 
 ---
 
-## 29. Requisitos para utilizador final vs. programador
+## 29. End-user vs. developer requirements
 
-### Para desenvolver/compilar
+### To develop/build
 
 ```text
 Windows x64
@@ -772,55 +773,55 @@ Windows SDK
 foobar2000 SDK
 ```
 
-### Para executar o componente
+### To run the component
 
 ```text
 Windows x64
 foobar2000 x64
 foo_sacd_dlna
-foo_input_sacd (necessário para SACD ISO)
-rede local
+foo_input_sacd (required for SACD ISO)
+local network
 ```
 
-O utilizador final **não precisa de Visual Studio nem da SDK** para utilizar uma versão já compilada do componente.
+The end user **does not need Visual Studio or the SDK** to use an already-built version of the component. See `INSTALL.md`.
 
 ---
 
-## 30. Checklist antes de publicar uma release
+## 30. Checklist before publishing a release
 
 ```text
-[ ] Release | x64 compila sem erros
-[ ] Sem DLL Debug no pacote
-[ ] foobar2000 carrega o componente
-[ ] Preferences funciona
-[ ] Help funciona
-[ ] foo_input_sacd é detectado
-[ ] SSDP funciona
-[ ] Browse funciona
-[ ] BrowseMetadata funciona
-[ ] DSF abre no renderer
-[ ] HTTP Range funciona
-[ ] SACD ISO funciona
-[ ] Cache funciona
-[ ] libFLAC.dll está junto de foo_sacd_dlna.dll na pasta de componentes (não só em $(OutDir))
-[ ] Consola não mostra o aviso "libFLAC.dll was not found" no arranque
-[ ] DVD-Audio -> FLAC funciona (foo_input_dvda instalado + formato partilhado)
-[ ] flac.exe -t / metaflac.exe --list confirmam a cache .flac gerada
-[ ] DSD64 testado
-[ ] DSD128 testado
-[ ] DSD256 testado
-[ ] Artwork testado
-[ ] Cancelamento testado
-[ ] Concorrência testada
-[ ] Firewall documentado
-[ ] Logs verificados
-[ ] Firmware T+A registado
-[ ] Hardware T+A testado
+[ ] Release | x64 builds without errors
+[ ] No Debug DLL in the package
+[ ] foobar2000 loads the component
+[ ] Preferences works
+[ ] Help works
+[ ] foo_input_sacd is detected
+[ ] SSDP works
+[ ] Browse works
+[ ] BrowseMetadata works
+[ ] DSF opens on the renderer
+[ ] HTTP Range works
+[ ] SACD ISO works
+[ ] Cache works
+[ ] libFLAC.dll is next to foo_sacd_dlna.dll in the components folder (not just in $(OutDir))
+[ ] Console shows no "libFLAC.dll was not found" warning at startup
+[ ] DVD-Audio -> FLAC works (foo_input_dvda installed + format shared)
+[ ] flac.exe -t / metaflac.exe --list confirm the generated .flac cache
+[ ] DSD64 tested
+[ ] DSD128 tested
+[ ] DSD256 tested
+[ ] Artwork tested
+[ ] Cancellation tested
+[ ] Concurrency tested
+[ ] Firewall documented
+[ ] Logs checked
+[ ] T+A firmware recorded
+[ ] T+A hardware tested
 ```
 
 ---
 
-## 31. Referências oficiais
+## 31. Official references
 
 ### foobar2000
 
@@ -832,8 +833,8 @@ https://www.foobar2000.org/changelog-sdk
 
 ### Microsoft
 
-Visual Studio 2022 — requisitos:
-https://learn.microsoft.com/pt-pt/visualstudio/releases/2022/system-requirements
+Visual Studio 2022 — requirements:
+https://learn.microsoft.com/en-us/visualstudio/releases/2022/system-requirements
 
 Desktop development with C++ / workload:
 https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-build-tools
@@ -844,52 +845,52 @@ https://learn.microsoft.com/en-us/cpp/overview/acquire-msvc
 Windows C++ development:
 https://learn.microsoft.com/en-us/cpp/windows/overview-of-windows-programming-in-cpp
 
-## 32. WTL e o toolset v142
+## 32. WTL and the v142 toolset
 
-A camada de helpers da SDK do foobar2000 precisa dos headers do WTL, além do ATL. Este projecto usa o toolset **v142**:
+The foobar2000 SDK's helper layer needs the WTL headers, in addition to ATL. This project uses the **v142** toolset:
 
 ```xml
 <PlatformToolset>v142</PlatformToolset>
 ```
 
-Não mudes o componente para v143 isoladamente.
+Do not switch the component to v143 in isolation.
 
-O nome da pasta WTL não é fixo — o projecto descobre automaticamente, via `WTL.props`, uma pasta irmã que contenha `include\atlapp.h`:
+The WTL folder's name is not fixed — the project auto-discovers, via `WTL.props`, a sibling folder containing `include\atlapp.h`:
 
 ```text
-<pasta raiz da SDK>\<pasta WTL>\include\atlapp.h
+<SDK root folder>\<WTL folder>\include\atlapp.h
 ```
 
-Podes também indicar o caminho explicitamente, com qualquer uma destas três propriedades MSBuild: `WTLIncludeDir`, `WTL_INCLUDE` ou `WTL_ROOT` (por exemplo em `WTL.user.props`).
+You can also specify the path explicitly, with any of these three MSBuild properties: `WTLIncludeDir`, `WTL_INCLUDE` or `WTL_ROOT` (for example in `WTL.user.props`).
 
-### Verificar o WTL
+### Verify WTL
 
-A partir de uma Developer PowerShell do Visual Studio:
+From a Visual Studio Developer PowerShell:
 
 ```powershell
 .\tools\check_build_env.ps1
 ```
 
-ou, com o caminho explícito:
+or, with an explicit path:
 
 ```powershell
-.\tools\check_build_env.ps1 -WtlInclude '<pasta raiz da SDK>\<pasta WTL>\include'
+.\tools\check_build_env.ps1 -WtlInclude '<SDK root folder>\<WTL folder>\include'
 ```
 
-### Compilar com WTL auto-descoberto ou explícito
+### Build with auto-discovered or explicit WTL
 
 ```powershell
 .\tools\build.ps1 -Configuration Debug -Platform x64
 .\tools\build.ps1 -Configuration Release -Platform x64
-.\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude '<pasta raiz da SDK>\<pasta WTL>\include'
+.\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude '<SDK root folder>\<WTL folder>\include'
 ```
 
-### Caminho da shared library da SDK
+### SDK shared library path
 
-O projecto resolve a `shared-x64.lib` da SDK como:
+The project resolves the SDK's `shared-x64.lib` as:
 
 ```text
 $(SolutionDir)..\shared\shared-x64.lib
 ```
 
-isto é, relativo à pasta onde colocaste a SDK (ver passo 6 — "Estrutura de pastas recomendada"). Não é um caminho absoluto fixo; ajusta a estrutura de pastas em vez de editar este caminho.
+that is, relative to the folder where you placed the SDK (see step 6 — "Recommended folder layout"). It is not a fixed absolute path; adjust your folder layout instead of editing this path.
