@@ -64,6 +64,7 @@ Logs reais de uma sessão de teste com foobar2000 + T+A SDX + VLC (ver `docs/VAL
 
 A referência consolidada está em:
 
+- `INSTALL.pt-PT.md` — instalar um componente já compilado (começa aqui se só queres usar, não compilar).
 - `docs/DOCUMENTACAO.pt-PT.md` — documentação técnica e de utilização completa.
 - `docs/ARCHITECTURE.md` — arquitectura.
 - `docs/USER_GUIDE.md` — guia de utilização.

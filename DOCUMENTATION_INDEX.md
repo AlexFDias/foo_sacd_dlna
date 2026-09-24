@@ -4,6 +4,8 @@
 
 - `README.pt-PT.md` — entrada rápida em Português (Portugal).
 - `README.md` — quick start em Inglês.
+- `INSTALL.pt-PT.md` — instalar um build já compilado (sem compilar nada). Ver primeiro se só precisas de usar o componente.
+- `INSTALL.md` — installing an already-built component (no compiling). See this first if you just want to use it.
 - `docs/DOCUMENTACAO.pt-PT.md` — referência técnica principal em Português.
 - `docs/DOCUMENTATION.md` — referência técnica consolidada em Inglês.
 - `docs/ARCHITECTURE.md` — arquitectura e fluxos.
@@ -17,7 +19,9 @@
 | Documento | Função |
 |---|---|
 | `CHANGELOG.md` | histórico consolidado de alterações |
-| `BUILD.md` | preparação e compilação Windows/MSVC/WTL |
+| `INSTALL.md` / `INSTALL.pt-PT.md` | instalar um componente já compilado |
+| `BUILD.md` | preparação e compilação Windows/MSVC/WTL (Inglês) |
+| `BUILD.pt-PT.md` | o mesmo, em Português |
 | `RELEASE_CHECKLIST.md` | checklist de release/validação |
 | `HARDWARE_VALIDATION.md` | matriz de validação T+A SDX |
 | `NETWORK_REQUIREMENTS.md` | requisitos de rede |

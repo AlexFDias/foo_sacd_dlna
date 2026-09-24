@@ -2,6 +2,11 @@
 
 Newest changes first. Superseded revision-by-revision build/audit notes have been consolidated; see `docs/VALIDATION_STATUS.md` for what is and isn't actually build/hardware-validated.
 
+## 1.0.0 (continued) — BUILD.md language split, INSTALL.md added
+
+- `BUILD.md` was entirely in Portuguese, unlike every other paired doc in this tree (`README.md`/`README.pt-PT.md`, `docs/DOCUMENTATION.md`/`docs/DOCUMENTACAO.pt-PT.md`). Split into `BUILD.md` (English) and `BUILD.pt-PT.md` (Portuguese, the original text), matching that convention. Section numbers are identical between the two.
+- Added `INSTALL.md` / `INSTALL.pt-PT.md`: a short, end-user-focused install guide (copy the DLL, copy `libFLAC.dll`, enable in Preferences, verify) for people who already have a build and don't need `BUILD.md`'s compiler/toolchain instructions at all.
+
 ## 1.0.0 — first consolidated release
 
 Everything below this entry (the `Alpha 3 *` line, and the DVD-Audio FLAC `v6`–`v10` line) was iterative work on the same codebase. This release does not add a feature; it is the point where all of that work was reconciled into one internally-consistent tree:

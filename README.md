@@ -64,6 +64,7 @@ Real-world diagnostic logs from a foobar2000 + T+A SDX + VLC test session (see `
 
 See:
 
+- `INSTALL.md` — installing an already-built component (start here if you just want to use it, not compile it).
 - `docs/DOCUMENTATION.md` — consolidated documentation entry point.
 - `docs/ARCHITECTURE.md` — architecture.
 - `docs/USER_GUIDE.md` — user guide.

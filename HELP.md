@@ -42,6 +42,7 @@ Fix: copy `third_party/libFLAC/Win64/libFLAC.dll` (from the source tree, or from
 
 ## Where to go next
 
+- Installing a build you already have (or just downloaded): `INSTALL.md`
 - Everyday usage and settings: `docs/USER_GUIDE.md`, `PREFERENCES_FIELDS.md`
 - Building from source: `BUILD.md`
 - Architecture / how it works internally: `docs/ARCHITECTURE.md`

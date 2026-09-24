@@ -62,7 +62,7 @@ HTTP / UPnP / DLNA
 
 A conversão DVD-Audio usa **um único writer**: o `libFLAC.dll` (Win64, 1.5.x) oficial da Xiph, carregado dinamicamente pelo `dvd_audio_flac.cpp` — não existe um encoder FLAC escrito à mão no componente. O componente entrega PCM 24-bit intercalado ao libFLAC, que gera o FLAC nativo e trata STREAMINFO, frame headers, subframes (CONSTANT/FIXED/LPC, conforme o conteúdo — não verbatim fixo) e CRCs. A validação da cache (`validateFlacFile()`) não assume o layout de nenhum writer específico: percorre a cadeia de metadata, valida o STREAMINFO e confirma o início de um frame, já que o próprio libFLAC verifica o que escreve (`FLAC__stream_encoder_set_verify`). Ver `FLAC_RUNTIME.md` e `docs/ARCHITECTURE.md` para o detalhe completo.
 
-`libFLAC.dll` é uma dependência de **runtime**, não de build: tem de estar na mesma pasta onde `foo_sacd_dlna.dll` está instalado (não basta estar na pasta de output da compilação). Se faltar, a conversão DVD-Audio → FLAC falha para todas as faixas (`libFLAC.dll 1.5.x was not found next to foo_sacd_dlna`), mas a partilha DSD/SACD continua a funcionar normalmente; o arranque do componente já mostra um aviso na Consola do foobar2000 quando isto acontece — ver `BUILD.md`, secção 15.
+`libFLAC.dll` é uma dependência de **runtime**, não de build: tem de estar na mesma pasta onde `foo_sacd_dlna.dll` está instalado (não basta estar na pasta de output da compilação). Se faltar, a conversão DVD-Audio → FLAC falha para todas as faixas (`libFLAC.dll 1.5.x was not found next to foo_sacd_dlna`), mas a partilha DSD/SACD continua a funcionar normalmente; o arranque do componente já mostra um aviso na Consola do foobar2000 quando isto acontece — ver `BUILD.pt-PT.md`, secção 15.
 
 A implementação rejeita fontes com mais de 8 canais porque o mapeamento de canais usado pelo conversor não está definido para mais de 8 canais.
 
@@ -85,7 +85,7 @@ A partilha de formatos não DSD é nativa: quando não é necessária uma cache 
 - foobar2000 SDK 2025-03-07.
 - Visual Studio 2022 com ferramentas C++ adequadas.
 - MSVC v142 conforme a configuração documentada.
-- Headers WTL disponíveis segundo `BUILD.md` (secção 32, "WTL e o toolset v142").
+- Headers WTL disponíveis segundo `BUILD.pt-PT.md` (secção 32, "WTL e o toolset v142").
 
 ### Dependências funcionais
 
@@ -394,7 +394,7 @@ Consultar `LICENSE.md`/`LICENSE`, `LICENSING.md` e a documentação de cada depe
 
 ## 18. Organização da documentação
 
-A documentação antiga específica de cada revisão foi removida para evitar referências contraditórias. O estado actual está consolidado em `docs/`, `BUILD.md`, `CHANGELOG.md` e nos documentos especializados ainda mantidos no directório raiz.
+A documentação antiga específica de cada revisão foi removida para evitar referências contraditórias. O estado actual está consolidado em `docs/`, `BUILD.md`/`BUILD.pt-PT.md`, `CHANGELOG.md` e nos documentos especializados ainda mantidos no directório raiz.
 
 Quando existir uma diferença entre histórico e código actual, o código e a documentação consolidada desta árvore são a referência para a revisão actual; o `CHANGELOG.md` serve apenas como histórico de evolução.
 
