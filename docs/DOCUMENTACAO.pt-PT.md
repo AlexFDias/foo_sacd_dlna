@@ -1,7 +1,7 @@
 # foo_sacd_dlna — Documentação Consolidada
 
 **Componente:** `foo_sacd_dlna`  
-**Versão da árvore:** `0.8-alpha3-u-dvda-flac-libflac`  
+**Versão da árvore:** `1.0.0`  
 **Estado:** Alpha / desenvolvimento  
 **Plataforma alvo:** foobar2000 x64 / Windows  
 **SDK alvo:** foobar2000 SDK 2025-03-07  
@@ -9,12 +9,6 @@
 
 > Esta documentação consolida o estado da árvore fornecida. Não substitui os registos históricos de build e auditoria; esses continuam no directório raiz.
 
-
-### DVD-Audio → FLAC: encoder oficial
-
-A conversão DVD-Audio foi simplificada para ter **um único writer**: o libFLAC 1.5.x oficial. O encoder FLAC manual foi eliminado para evitar código órfão entre revisões. O componente entrega PCM 24-bit intercalado ao libFLAC, que gera o FLAC nativo e trata STREAMINFO, frames, subframes e CRCs. A validação do cache deixou de assumir o layout interno do writer antigo.
-
-O `cacheVersion` passou para **4**, invalidando automaticamente caches gerados pelo writer manual anterior.
 ## 1. Objectivo
 
 O `foo_sacd_dlna` é um servidor UPnP/DLNA para foobar2000 destinado a disponibilizar música através da rede para leitores compatíveis.
@@ -57,16 +51,18 @@ DVD-Audio
    ↓
 foo_input_dvda
    ↓
-PCM
+PCM 24-bit
    ↓
-FLAC 24-bit lossless
+libFLAC 1.5.x (encoder oficial da Xiph, carregado dinamicamente)
    ↓
-cache persistente
+cache .flac persistente
    ↓
 HTTP / UPnP / DLNA
 ```
 
-O código `dvd_audio_flac.cpp` escreve um FLAC próprio, sem depender de uma biblioteca FLAC externa incluída no componente. A implementação usa subframes verbatim de 24-bit PCM.
+A conversão DVD-Audio usa **um único writer**: o `libFLAC.dll` (Win64, 1.5.x) oficial da Xiph, carregado dinamicamente pelo `dvd_audio_flac.cpp` — não existe um encoder FLAC escrito à mão no componente. O componente entrega PCM 24-bit intercalado ao libFLAC, que gera o FLAC nativo e trata STREAMINFO, frame headers, subframes (CONSTANT/FIXED/LPC, conforme o conteúdo — não verbatim fixo) e CRCs. A validação da cache (`validateFlacFile()`) não assume o layout de nenhum writer específico: percorre a cadeia de metadata, valida o STREAMINFO e confirma o início de um frame, já que o próprio libFLAC verifica o que escreve (`FLAC__stream_encoder_set_verify`). Ver `FLAC_RUNTIME.md` e `docs/ARCHITECTURE.md` para o detalhe completo.
+
+`libFLAC.dll` é uma dependência de **runtime**, não de build: tem de estar na mesma pasta onde `foo_sacd_dlna.dll` está instalado (não basta estar na pasta de output da compilação). Se faltar, a conversão DVD-Audio → FLAC falha para todas as faixas (`libFLAC.dll 1.5.x was not found next to foo_sacd_dlna`), mas a partilha DSD/SACD continua a funcionar normalmente; o arranque do componente já mostra um aviso na Consola do foobar2000 quando isto acontece — ver `BUILD.md`, secção 15.
 
 A implementação rejeita fontes com mais de 8 canais porque o mapeamento de canais usado pelo conversor não está definido para mais de 8 canais.
 
@@ -89,7 +85,7 @@ A partilha de formatos não DSD é nativa: quando não é necessária uma cache 
 - foobar2000 SDK 2025-03-07.
 - Visual Studio 2022 com ferramentas C++ adequadas.
 - MSVC v142 conforme a configuração documentada.
-- Headers WTL disponíveis segundo `BUILD.md`, `BUILD.md` e `BUILD.md`.
+- Headers WTL disponíveis segundo `BUILD.md` (secção 32, "WTL e o toolset v142").
 
 ### Dependências funcionais
 
@@ -196,6 +192,8 @@ O estado expõe:
 Quando o limite de streams é atingido, novos pedidos de áudio podem receber `503` com `Retry-After`. O slot é adquirido atomicamente no ponto em que o áudio está prestes a ser transmitido e libertado em todos os caminhos de saída.
 
 Alterar o limite aplica-se a novos pedidos; streams já em execução não são interrompidos por essa alteração.
+
+Desde a correção `v9`, o socket de streaming tem um `SO_SNDTIMEO` de 15 segundos: sem isto, uma ligação abandonada a meio (o que acontece rotineiramente quando um renderer salta de faixa sem fechar a ligação anterior de forma limpa) podia deixar uma thread bloqueada num `send()` durante minutos, continuando a ocupar o seu slot de stream. Com o limite predefinido de 2 streams, bastavam duas ligações abandonadas seguidas para esgotar todos os slots e fazer o servidor responder `503` a pedidos completamente não relacionados. Com o timeout, um `send()` preso falha rapidamente e o slot é libertado de imediato.
 
 ## 7. Stability Mode e read-ahead
 
@@ -353,12 +351,22 @@ A documentação histórica indica que **Alpha 3 I** foi confirmada pelo respons
 
 As revisões posteriores contêm alterações adicionais. A documentação histórica também regista explicitamente que essas revisões requerem novo rebuild Windows/MSVC v142 antes de serem declaradas build-validated.
 
-Portanto, para esta árvore `0.8-alpha3-u-dvda-flac-libflac`, o estado correcto é:
+Portanto, para esta árvore `1.0.0`, o estado correcto é:
 
 - **código/documentação presentes:** sim;
 - **feature set documentado no código:** sim;
-- **build desta árvore confirmado por esta documentação consolidada:** não;
+- **build desta árvore confirmado por esta documentação consolidada:** não — não há aqui toolchain Windows/MSVC para o confirmar;
 - **validação de hardware T+A desta árvore:** requer teste no hardware/firmware exacto.
+
+### Evidência real de diagnóstico (não substitui a validação acima)
+
+Uma sessão de teste real (foobar2000 + renderer T+A + VLC 3.0.24) produziu um `network.log` de vários dias e um dump de diagnóstico da VLC, analisados em detalhe. Na sessão de servidor mais recente desse log:
+
+- as **54** tentativas de conversão DVD-Audio → FLAC falharam todas exactamente com `libFLAC.dll 1.5.x was not found next to foo_sacd_dlna` — um ficheiro de runtime em falta na pasta de instalação, não um defeito de código;
+- não ocorreu nenhuma falha `generated FLAC failed structural validation` (o validador de cadeia de metadata FLAC) nessa sessão;
+- ocorreram apenas 3 eventos residuais de `socket send failed`, consistentes com o comportamento pretendido do `SO_SNDTIMEO` (ligação abandonada a falhar depressa), não com um bug.
+
+Ou seja: nesse ambiente de teste, o encoder e a validação de cache não foram a causa dos problemas observados — foi um passo de instalação em falta (`libFLAC.dll`), agora sinalizado de imediato na Consola do foobar2000 no arranque. Ver `docs/VALIDATION_STATUS.md` para o detalhe completo.
 
 ## 16. Estrutura principal do código
 
@@ -390,24 +398,4 @@ A documentação antiga específica de cada revisão foi removida para evitar re
 
 Quando existir uma diferença entre histórico e código actual, o código e a documentação consolidada desta árvore são a referência para a revisão actual; o `CHANGELOG.md` serve apenas como histórico de evolução.
 
-
-### DVD-Audio cache availability
-
-`ensureCachedFlac()` must not use `dvda_plugin_installed()` as a hard prerequisite for serving or generating a cache. That probe enumerates `componentversion` services; it is diagnostic metadata, not the decoder API. DVD-Audio conversion itself goes through `input_entry::g_open_for_info_read()` / `input_entry::g_open_for_decoding()`. Existing validated caches remain usable when the component probe returns no version.
-### Media HTTP diagnostics v4
-
-The media endpoint distinguishes an unknown media ID (`404`) from a known item whose DVD-Audio/DSF preparation failed (`503`). Network diagnostics record the preparation reason so renderer logs can identify whether the failure is ContentDirectory/media-ID mapping or cache/decoder generation.
-
-
-
-### DVD-Audio: PCM authoritative format
-
-The DVD-Audio FLAC path opens the decoder before configuring libFLAC and uses the first decoded PCM chunk as the authoritative sample-rate/channel layout. This avoids relying exclusively on static `file_info` metadata for DVD-Audio program variants such as downmix and C/LFE tracks. Subsequent chunks must keep the same PCM format; a mismatch is reported as a conversion error.
-
-### v7 Range/stream limiter behavior
-
-A single renderer may use multiple HTTP Range connections during seeking or prefetch. These connections are treated as one logical active stream when they originate from the same already-streaming peer, so the Max Streams limit does not reject a renderer's own seek/prefetch connection with HTTP 503.
-
-## v8 — DVD-Audio decoder priming-chunk fix
-
-DVD-Audio tracks may emit one or more empty/setup PCM decoder runs before the first real block. The FLAC conversion path skips those runs and derives the libFLAC stream format from the first non-empty PCM block; a 64-run guard prevents an infinite loop.
+Ver `docs/ARCHITECTURE.md` para os detalhes de implementação do pipeline DVD-Audio → FLAC, disponibilidade de cache, diagnóstico HTTP e limitador de streams, e `CHANGELOG.md` para o respectivo histórico de revisões.

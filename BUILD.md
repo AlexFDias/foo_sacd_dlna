@@ -2,13 +2,15 @@
 
 Este documento explica, passo a passo, como preparar um PC Windows para **compilar, testar e diagnosticar** o `foo_sacd_dlna`.
 
-> **Estado do projecto:** Alpha. A **0.8 Alpha 3 I foi confirmada pelo responsável do projecto como compilada com sucesso e a funcionar** em Windows **Debug x64**, com `pfc` em **Debug FB2K x64**, SDK foobar2000 2025-03-07, MSVC v142 e WTL. A Alpha 3 J acrescenta novos pontos do roadmap e necessita de novo rebuild.
-
 ## Estado de build desta árvore
 
-Esta árvore é uma revisão Alpha que requer **fresh rebuild** com Windows/MSVC v142. A documentação não afirma que esta revisão exacta foi compilada neste ambiente. A confirmação histórica de builds anteriores permanece no `CHANGELOG.md`, mas não deve ser usada como validação da revisão actual.
+Esta é a **1.0.0**, a primeira revisão em que código, `.vcxproj` e documentação (`BUILD.md`, `CHANGELOG.md`, `docs/`) foram reconciliados entre si — ver a entrada "1.0.0 — first consolidated release" no topo do `CHANGELOG.md` para a lista concreta do que estava inconsistente e foi corrigido. Não é uma reescrita: é a mesma base de código Alpha (histórico completo em `CHANGELOG.md`), agora sem as contradições entre revisões que se tinham acumulado.
 
-O build x64 usa WTL através de `WTL.props`. A localização pode ser fornecida por `WTLIncludeDir`, `WTL_INCLUDE` ou `WTL_ROOT`; não é necessário manter documentação histórica separada para estes overrides.
+Isto **não** é uma afirmação de build/hardware validado — não existe aqui um toolchain Windows/MSVC para compilar esta árvore. O histórico de builds Windows anteriores (revisões *Alpha 3 E* a *Alpha 3 U*) está em `CHANGELOG.md` e não prova que a 1.0.0 compila; ver `docs/VALIDATION_STATUS.md` para o que está e não está confirmado.
+
+Em contrapartida, esta revisão **já foi exercitada com evidência real de campo**: os logs de diagnóstico de um teste com foobar2000 real, um renderer T+A e a VLC mostraram que o único motivo, consistente e sem excepções, pelo qual a conversão DVD-Audio → FLAC falhava era o `libFLAC.dll` não estar junto do `foo_sacd_dlna.dll` instalado — não um defeito no código de validação FLAC ou no encoder. Ver o passo 15 abaixo e `FLAC_RUNTIME.md`.
+
+O build x64 usa WTL através de `WTL.props`. A localização pode ser fornecida por `WTLIncludeDir`, `WTL_INCLUDE` ou `WTL_ROOT` — ver o passo 8.
 
 
 ## 1. O que é necessário para compilar
@@ -346,7 +348,55 @@ A ISO original não deve ser alterada.
 
 ---
 
-## 15. Testar o servidor DLNA sem o SDX
+## 15. Terceiro teste: DVD-Audio → FLAC
+
+Depois de DSF e SACD ISO funcionarem, testa uma faixa DVD-Audio.
+
+Isto exige três coisas, todas obrigatórias:
+
+1. **`foo_input_dvda`** instalado (o decoder DVD-Audio).
+2. A extensão/origem DVD-Audio incluída em **Shared formats**.
+3. **`libFLAC.dll` (Win64, 1.5.x) copiado para a mesma pasta onde está instalado `foo_sacd_dlna.dll`** no perfil de teste do foobar2000 — normalmente `%AppData%\foobar2000-v2\user-components\foo_sacd_dlna\` ou equivalente. A DLL está em `third_party\libFLAC\Win64\libFLAC.dll` no código-fonte; o build já a copia para a pasta de output do projecto (`$(OutDir)`), mas **isso não é a pasta de componentes do foobar2000** — tens de a copiar tu, à mão, para lá.
+
+Este último passo é fácil de esquecer porque é uma cópia manual separada da compilação, e esquecê-lo produz um sintoma enganador: todas as faixas DVD-Audio falham, uma a uma, com HTTP 503 no renderer (e HTTP 404/503 na VLC), sem qualquer indicação óbvia de que falta um ficheiro. A partir desta revisão, se a DLL não for encontrada, o foobar2000 mostra logo no arranque, na **Consola**, uma linha do género:
+
+```text
+SACD DLNA: libFLAC.dll was not found at "...\libFLAC.dll" -- DVD-Audio to FLAC
+conversion will fail for every track until it is copied there (see FLAC_RUNTIME.md).
+DSD/SACD sharing is not affected.
+```
+
+Se vires esta linha, o teste vai falhar sempre — resolve isto primeiro, antes de investigar mais nada.
+
+O caminho esperado, uma vez a DLL presente, é:
+
+```text
+DVD-Audio
+   ↓
+foo_input_dvda
+   ↓
+PCM 24-bit
+   ↓
+libFLAC 1.5.x (encoder real, carregado dinamicamente)
+   ↓
+cache .flac
+   ↓
+HTTP/DLNA
+   ↓
+SDX 3100 HV
+```
+
+Confirma a cache gerada com as ferramentas oficiais da distribuição FLAC 1.5.0 Win64:
+
+```powershell
+flac.exe -t caminho\para\a\cache\<id>.flac
+metaflac.exe --list caminho\para\a\cache\<id>.flac
+```
+
+`flac -t` deve reportar o ficheiro como válido; `metaflac --list` deve mostrar o sample rate, canais, bits e total de samples esperados para a faixa. Ver `FLAC_RUNTIME.md` para os detalhes do encoder e da validação de cache.
+---
+
+## 16. Testar o servidor DLNA sem o SDX
 
 O projecto inclui scripts em:
 
@@ -381,7 +431,7 @@ python .\tools\dlna_smoke_test.py 192.168.1.20 8192 --get
 
 ---
 
-## 16. Testar com o T+A SDX 3100 HV
+## 17. Testar com o T+A SDX 3100 HV
 
 A rede recomendada é:
 
@@ -423,7 +473,7 @@ TX: ~22–24 Mbit/s
 
 ---
 
-## 17. Requisitos de rede
+## 18. Requisitos de rede
 
 Débito aproximado do payload DSD estéreo:
 
@@ -445,7 +495,7 @@ A razão é simples: o objectivo não é apenas ter largura de banda suficiente,
 
 ---
 
-## 18. Windows Firewall
+## 19. Windows Firewall
 
 Para o funcionamento local de DLNA, o componente usa normalmente:
 
@@ -469,7 +519,7 @@ Não exponhas este servidor DLNA directamente à Internet.
 
 ---
 
-## 19. Testar HTTP Range
+## 20. Testar HTTP Range
 
 O renderer pode fazer pedidos parciais:
 
@@ -492,7 +542,7 @@ quando um pedido Range válido é recebido.
 
 ---
 
-## 20. Diagnóstico com Wireshark
+## 21. Diagnóstico com Wireshark
 
 Para problemas de DLNA, Wireshark é extremamente útil.
 
@@ -532,7 +582,7 @@ O último pedido é o ponto em que começa a transmissão real do áudio.
 
 ---
 
-## 21. Testar estabilidade DSD256
+## 22. Testar estabilidade DSD256
 
 Configuração inicial:
 
@@ -559,7 +609,7 @@ Para DSD256, 15 segundos correspondem a aproximadamente **42,3 MB** de payload D
 
 ---
 
-## 22. Testar cache SACD
+## 23. Testar cache SACD
 
 Quando uma ISO é usada, o projecto pode criar uma cache DSF.
 
@@ -579,7 +629,7 @@ O objectivo é evitar que a conversão SACD seja repetida desnecessariamente e, 
 
 ---
 
-## 23. Teste de cancelamento/concurrency
+## 24. Teste de cancelamento/concurrency
 
 Durante desenvolvimento, testa situações como:
 
@@ -593,7 +643,7 @@ O componente deve cancelar tarefas antigas sem deixar ficheiros DSF incompletos 
 
 ---
 
-## 24. Desenvolvimento no Visual Studio
+## 25. Desenvolvimento no Visual Studio
 
 Para depuração podes configurar o executável do foobar2000 como aplicação de arranque:
 
@@ -622,7 +672,7 @@ ui_element.cpp
 
 ---
 
-## 25. Testes recomendados por ordem
+## 26. Testes recomendados por ordem
 
 Para reduzir o número de variáveis, testa por esta ordem:
 
@@ -640,20 +690,31 @@ Para reduzir o número de variáveis, testa por esta ordem:
 11. DSF no SDX
 12. SACD ISO
 13. DSF cache
-14. DSD64
-15. DSD128
-16. DSD256
-17. estabilidade/rede congestionada
-18. gapless
-19. artwork
-20. reprodução longa
+14. libFLAC.dll presente (ver passo 15) + DVD-Audio -> FLAC
+15. flac.exe -t / metaflac.exe --list na cache gerada
+16. DSD64
+17. DSD128
+18. DSD256
+19. estabilidade/rede congestionada
+20. gapless
+21. artwork
+22. reprodução longa
 ```
 
 ---
 
-## 26. CI / GitHub Actions
+## 27. CI / GitHub Actions
 
-O projecto inclui preparação para builds automáticos em Windows.
+O projecto inclui um workflow em `.github/workflows/build.yml` que compila Debug e Release x64 e publica `foo_sacd_dlna.dll` + `libFLAC.dll` como artefacto.
+
+**Antes de correr, tens de configurar duas repository variables** (Settings → Secrets and variables → Actions → Variables), porque a SDK do foobar2000 e o WTL não são distribuídos neste repositório (ver secção 5):
+
+```text
+FOOBAR2000_SDK_URL   URL directo do arquivo da SDK (ver https://www.foobar2000.org/SDK)
+WTL_URL              URL directo de um arquivo WTL contendo include\atlapp.h
+```
+
+Sem estas variáveis definidas, o workflow falha logo no primeiro passo com uma mensagem clara, em vez de falhar de forma confusa mais tarde. Confirma que os dois URLs ainda são válidos antes de depender deste workflow — páginas de download oficiais mudam de versão em versão.
 
 Um build automático deve produzir, no mínimo:
 
@@ -669,7 +730,7 @@ A validação física tem de ser feita com um SDX 3100 HV real e com o firmware 
 
 ---
 
-## 27. Informações a guardar em cada release
+## 28. Informações a guardar em cada release
 
 Regista sempre:
 
@@ -689,7 +750,7 @@ T+A SDX firmware version
 Exemplo:
 
 ```text
-foo_sacd_dlna: 0.7.0-alpha3
+foo_sacd_dlna: 1.0.0
 foobar2000 SDK: 2025-03-07
 Visual Studio: 2022
 Configuration: Release
@@ -698,7 +759,7 @@ Platform: x64
 
 ---
 
-## 28. Requisitos para utilizador final vs. programador
+## 29. Requisitos para utilizador final vs. programador
 
 ### Para desenvolver/compilar
 
@@ -725,7 +786,7 @@ O utilizador final **não precisa de Visual Studio nem da SDK** para utilizar um
 
 ---
 
-## 29. Checklist antes de publicar uma release
+## 30. Checklist antes de publicar uma release
 
 ```text
 [ ] Release | x64 compila sem erros
@@ -741,6 +802,10 @@ O utilizador final **não precisa de Visual Studio nem da SDK** para utilizar um
 [ ] HTTP Range funciona
 [ ] SACD ISO funciona
 [ ] Cache funciona
+[ ] libFLAC.dll está junto de foo_sacd_dlna.dll na pasta de componentes (não só em $(OutDir))
+[ ] Consola não mostra o aviso "libFLAC.dll was not found" no arranque
+[ ] DVD-Audio -> FLAC funciona (foo_input_dvda instalado + formato partilhado)
+[ ] flac.exe -t / metaflac.exe --list confirmam a cache .flac gerada
 [ ] DSD64 testado
 [ ] DSD128 testado
 [ ] DSD256 testado
@@ -755,7 +820,7 @@ O utilizador final **não precisa de Visual Studio nem da SDK** para utilizar um
 
 ---
 
-## 30. Referências oficiais
+## 31. Referências oficiais
 
 ### foobar2000
 
@@ -779,99 +844,52 @@ https://learn.microsoft.com/en-us/cpp/overview/acquire-msvc
 Windows C++ development:
 https://learn.microsoft.com/en-us/cpp/windows/overview-of-windows-programming-in-cpp
 
-## WTL and the v142 toolset
+## 32. WTL e o toolset v142
 
-The foobar2000 SDK helper layer requires WTL headers in addition to ATL.
-This project uses the **v142** toolset. The WTL directory name is not fixed; the project auto-discovers a sibling folder containing `include\atlapp.h`:
-
-```text
-<SDK root>\<WTL folder>\include
-```
-
-The key header is:
-
-```text
-<SDK root>\<WTL folder>\include\atlapp.h
-```
-
-The component project is configured for:
+A camada de helpers da SDK do foobar2000 precisa dos headers do WTL, além do ATL. Este projecto usa o toolset **v142**:
 
 ```xml
 <PlatformToolset>v142</PlatformToolset>
 ```
 
-Do not switch the component to v143 in isolation.
+Não mudes o componente para v143 isoladamente.
 
-### Verify WTL
+O nome da pasta WTL não é fixo — o projecto descobre automaticamente, via `WTL.props`, uma pasta irmã que contenha `include\atlapp.h`:
 
-From a Visual Studio Developer PowerShell:
+```text
+<pasta raiz da SDK>\<pasta WTL>\include\atlapp.h
+```
+
+Podes também indicar o caminho explicitamente, com qualquer uma destas três propriedades MSBuild: `WTLIncludeDir`, `WTL_INCLUDE` ou `WTL_ROOT` (por exemplo em `WTL.user.props`).
+
+### Verificar o WTL
+
+A partir de uma Developer PowerShell do Visual Studio:
 
 ```powershell
 .\tools\check_build_env.ps1
 ```
 
-The script auto-discovers WTL by the marker header `include\atlapp.h`.
-
-You can also specify it explicitly:
+ou, com o caminho explícito:
 
 ```powershell
-.\tools\check_build_env.ps1 -WtlInclude '<SDK root>\<WTL folder>\include'
+.\tools\check_build_env.ps1 -WtlInclude '<pasta raiz da SDK>\<pasta WTL>\include'
 ```
 
-### Build with auto-discovered or renamed WTL tree
+### Compilar com WTL auto-descoberto ou explícito
 
 ```powershell
 .\tools\build.ps1 -Configuration Debug -Platform x64
-```
-
-or:
-
-```powershell
 .\tools\build.ps1 -Configuration Release -Platform x64
+.\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude '<pasta raiz da SDK>\<pasta WTL>\include'
 ```
 
-An explicit path is also supported:
+### Caminho da shared library da SDK
 
-```powershell
-.\tools\build.ps1 -Configuration Debug -Platform x64 -WtlInclude '<SDK root>\<WTL folder>\include'
-```
-
-See the WTL section below; `WTL.props` supports `WTLIncludeDir`, `WTL_INCLUDE` and `WTL_ROOT`.
-
-
-## SDK shared library path
-
-With this SDK layout, the component uses:
-
-```text
-D:\SDX_SACD_DSF_DLNA\SDK-2025-03-07\foobar2000\shared\shared-x64.lib
-```
-
-The project resolves this as:
+O projecto resolve a `shared-x64.lib` da SDK como:
 
 ```text
 $(SolutionDir)..\shared\shared-x64.lib
 ```
 
-## Alpha 3 G diagnostic validation note
-
-Alpha 3 G adds new UI, SSDP diagnostics and the network self-probe. These changes are source-level additions and require a fresh Windows **Debug x64 / MSVC v142** rebuild before Alpha 3 G can be marked build-validated. The last build confirmed by the project's Windows log remains Alpha 3 E.
-
-
-## Alpha 3 J note
-
-Alpha 3 J adds live current-track metadata, source/output technical information and explicit conversion/pipeline state to the existing diagnostics UI. A fresh Windows Debug x64 / MSVC v142 rebuild is required.
-
-
-## Alpha 3 I build validation note
-The immediately preceding Alpha 3 J build reached project compilation successfully but stopped on undeclared live-stream diagnostic members in `dlna_server.cpp`. Alpha 3 I adds the missing declarations to `dlna_server.h`.
-
-
-### Alpha 3 P — WTL discovery fix
-
-A Alpha 3 P corrige a sintaxe MSBuild da descoberta automática do WTL. Não se deve usar `@(WTLMarker)` numa expressão `Condition`; o marcador é agora convertido em propriedade dentro de um `PropertyGroup`. Se existirem várias instalações WTL detectáveis, definir explicitamente `WTLIncludeDir` em `WTL.user.props`.
-
-
-### Alpha 3 Q — WTL relocation / MSBuild fix
-
-Alpha 3 Q removes the invalid MSBuild item-list-to-property conversion from WTL discovery. It also adds an SDK-root `Directory.Build.targets` overlay so WTL headers are injected into referenced projects such as libPPUI and foobar2000_sdk_helpers. The `tools/install_wtl_support.ps1` script auto-detects any WTL folder containing `include\atlapp.h`, independent of the folder name.
+isto é, relativo à pasta onde colocaste a SDK (ver passo 6 — "Estrutura de pastas recomendada"). Não é um caminho absoluto fixo; ajusta a estrutura de pastas em vez de editar este caminho.

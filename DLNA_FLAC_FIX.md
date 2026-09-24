@@ -14,7 +14,9 @@ The generated FLAC was already being accepted by VLC as FLAC PCM audio. The DLNA
 
 ## Validation status
 
-The repository contains the source correction. A fresh Visual Studio build and playback test on the target T+A renderer must still be performed after installing the resulting component and `libFLAC.dll`.
+The repository contains the source correction. A fresh Visual Studio build is still required in this environment (no Windows toolchain here).
+
+A real playback test on the target T+A renderer has since been run and diagnosed via `network.log` and a VLC diagnostic dump (see `docs/VALIDATION_STATUS.md`): the DLNA/FLAC description fix, the metadata-chain FLAC validator and the `SO_SNDTIMEO` streaming-timeout logic did not show up as a failure cause. Every DVD-Audio conversion failure in that session was `libFLAC.dll 1.5.x was not found next to foo_sacd_dlna` — a missing runtime file in the deployed component folder, not a defect in the fixes described here. See `FLAC_RUNTIME.md` for the startup Console warning that now surfaces this immediately.
 
 ## Media URL stability fix
 

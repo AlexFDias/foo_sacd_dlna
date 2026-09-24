@@ -65,7 +65,7 @@ constexpr const char* kFolderPrefix = "folder-";
 constexpr size_t kMaxHttpHeader = 128 * 1024;
 constexpr size_t kMaxSoapBody = 2 * 1024 * 1024;
 constexpr uint32_t kCacheFormatVersion = 4; // invalidates caches produced by the removed hand-written FLAC writer
-constexpr const char* kVersion = "0.8-alpha3-u-dvda-flac-stableids-v8";
+constexpr const char* kVersion = "1.0.0";
 
 std::string lowerCopy(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });

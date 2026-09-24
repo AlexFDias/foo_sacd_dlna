@@ -39,7 +39,9 @@ The component requests DSD-capable decoder output through the public foobar2000 
 
 ## 4. DVD-Audio flow
 
-DVD-Audio is identified as a DVD-A source and decoded through `foo_input_dvda`. The resulting PCM is encoded into a cache file containing FLAC frames with 24-bit verbatim subframes. The cache manifest records decoder-version information so a decoder change can invalidate stale generated media.
+DVD-Audio is identified as a DVD-A source and decoded through `foo_input_dvda`. The resulting 24-bit PCM is fed to the real Xiph libFLAC 1.5.x encoder (`dvd_audio_flac.cpp`), loaded dynamically from `libFLAC.dll` — there is no local FLAC frame writer. libFLAC owns STREAMINFO, frame headers, subframe type selection (CONSTANT/FIXED/LPC, not always VERBATIM) and CRCs; the component's own `validateFlacFile()` only walks the metadata block chain and checks the STREAMINFO fields and frame sync, since re-parsing arbitrary libFLAC subframes here would just reimplement the FLAC bitstream format. The cache manifest records decoder-version information so a decoder change can invalidate stale generated media. See `FLAC_RUNTIME.md` for the full encoder configuration.
+
+`libFLAC.dll` is a **runtime** dependency, not a build dependency: the component links against nothing FLAC-related at compile time, and instead `LoadLibraryW`s the DLL from its own directory at startup. If the DLL is missing, DVD-Audio → FLAC conversion fails for every track (logged as `libFLAC.dll 1.5.x was not found next to foo_sacd_dlna`) while DSD/SACD sharing is unaffected; `start()` in `dlna_server.cpp` probes for the DLL and writes a one-time warning to the foobar2000 Console so this is visible immediately instead of only showing up as per-track `503`s later.
 
 The current implementation rejects more than eight channels because its FLAC channel mapping is not defined beyond that point.
 

@@ -1,101 +1,49 @@
-# Network Requirements
+# foo_sacd_dlna — Quick Help / FAQ
 
-## Recommended setup
+This is a short, task-oriented help page. For full detail see `docs/USER_GUIDE.md` (usage), `BUILD.md` (compiling), and `DOCUMENTATION_INDEX.md` (everything else).
 
-Use wired Gigabit Ethernet whenever possible:
+## What this component does
 
-```text
-Windows PC / foobar2000
-          │
-       1 GbE
-          │
-       Switch
-          │
-       1 GbE
-          │
-T+A SDX 3100 HV
-```
+`foo_sacd_dlna` is a UPnP/DLNA MediaServer for foobar2000. It shares your Music Library over the network so a DLNA renderer (a network audio streamer, a TV, a control-point app, etc.) can browse and play it:
 
-Native stereo DSD payload rates are approximately:
+- **DSF/DFF** files are served as-is.
+- **SACD ISO** is decoded through `foo_input_sacd` and served as native DSD/DSF (the `.iso` container itself is never sent).
+- **DVD-Audio** is decoded through `foo_input_dvda` and served as cached lossless 24-bit **FLAC**, via the real Xiph libFLAC 1.5.x encoder.
+- Any other shared format (FLAC/WAV/MP3/...) can optionally be served as-is too, via **Shared formats** in Settings.
 
-- DSD64: 5.64 Mbit/s
-- DSD128: 11.29 Mbit/s
-- DSD256: 22.58 Mbit/s
+## Fastest way to get playing
 
-100 Mbps Ethernet can carry these rates in theory, but Gigabit Ethernet is recommended for headroom and network congestion.
+1. `File → Preferences → Tools → SACD DLNA → Settings`: enable DLNA, enable Share Music Library.
+2. Point your renderer/control-point app at this PC; it should discover the server automatically over SSDP.
+3. Watch `Status`: `BROADCASTING / ACTIVE` means the server is up; `TRANSMITTING` means audio is actually flowing to a client right now.
 
-The SDX 3100 HV provides 10/100/1000 Base-T Ethernet and Wi-Fi. T+A documents DFF/DSF and DSD64/DSD128/DSD256 for the Streaming Client.
+## "It plays DSF but not DVD-Audio tracks" — read this first
 
-## Stability Mode
+By far the most common cause is **not a bug**: DVD-Audio → FLAC needs `libFLAC.dll` (Win64, 1.5.x) sitting in the *same folder as the installed* `foo_sacd_dlna.dll` — not just in the source tree's build-output folder. If it's missing, every DVD-Audio track fails, one at a time, as an HTTP `503` on the renderer (which many renderers/players then report as a generic "invalid or unknown format" error).
 
-Use Stability Mode on busy networks. The default 15-second read-ahead provides approximately:
-
-- DSD64: 10.6 MB
-- DSD128: 21.2 MB
-- DSD256: 42.3 MB
-
-These are approximate raw stereo DSD payload values.
-
-Stability Mode is designed for short interruptions and throughput fluctuations. It cannot overcome a sustained link slower than the required bitrate.
-
-## Wi-Fi
-
-5 GHz Wi-Fi can work, but wired Ethernet is preferred for predictable latency and reduced susceptibility to interference.
-
-2.4 GHz Wi-Fi should not be the preferred transport for DSD256.
-
-## Firewall
-
-Allow the foobar2000 application/component to accept:
-
-- TCP: the configured HTTP/DLNA port (default 8192)
-- UDP: SSDP multicast 239.255.255.250:1900
-
-The PC and T+A should normally be on the same LAN/VLAN for SSDP discovery.
-
-## Build toolchain note
-
-This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
+From this build onward, the foobar2000 **Console** tells you immediately at startup if this is the problem:
 
 ```text
-<SDK root>\<WTL folder>\include
+SACD DLNA: libFLAC.dll was not found at "...\libFLAC.dll" -- DVD-Audio to FLAC
+conversion will fail for every track until it is copied there (see FLAC_RUNTIME.md).
 ```
 
-See `BUILD.md`, `BUILD.md` and `BUILD.md` for the complete configuration.
+Fix: copy `third_party/libFLAC/Win64/libFLAC.dll` (from the source tree, or from a matching FLAC 1.5.0 Win64 release) into the folder where `foo_sacd_dlna.dll` is actually installed, then restart foobar2000. See `FLAC_RUNTIME.md` and `BUILD.md` (section 15) for the full explanation.
 
-## Live UPnP / DLNA network validation
+## Other common issues
 
-The status UI distinguishes three different conditions:
+| Symptom | Likely cause | Where to look |
+|---|---|---|
+| Renderer never sees the server at all | SSDP multicast blocked, or PC/renderer on different subnets/VLANs | `NETWORK_REQUIREMENTS.md`, `PROTOCOL_COMPATIBILITY.md` |
+| Works for a bit, then other tracks start returning 503 | Concurrent-stream limit reached, often from abandoned connections on track-skip | `PREFERENCES_FIELDS.md` ("Max streams"), `CHANGELOG.md` (`SO_SNDTIMEO` fix) |
+| SACD ISO tracks fail to prepare | `foo_input_sacd` missing, or it didn't return a native DSD/DoP stream for that particular ISO | Preferences → Status: `foo_input_sacd` detection line |
+| Playback stutters on Wi-Fi | Bitrate/latency; DSD256 in particular needs a solid link | `NETWORK_REQUIREMENTS.md` |
+| Unsure whether audio is actually being sent | `BROADCASTING` only means discovery is up, not that a stream is flowing | `Status` panel / `/status` web page |
 
-```text
-SSDP NOTIFY sent      = the server successfully sent discovery announcements
-HTTP self-test        = this PC can reach its own UPnP XML endpoints
-SSDP self-probe       = this PC sent M-SEARCH to 239.255.255.250:1900 and received its own MediaServer response
-PRESENCE CONFIRMED    = actual traffic from another LAN peer has been observed
-```
+## Where to go next
 
-The audio stream itself is **unicast HTTP/TCP**. SSDP multicast is discovery/announcement only; it does not carry DSD audio.
-
-Use **View → SACD DLNA → Open SACD DLNA Status** for the live panel. Right-clicking that panel runs the network probe. The Preferences page also provides **Run Network Probe**.
-
-For packet-level troubleshooting, capture UDP `239.255.255.250:1900` and TCP traffic to the configured HTTP port in Wireshark.
-### Network probe
-
-Use **Run Network Probe** to validate the local UPnP HTTP endpoints and perform an SSDP MediaServer multicast self-probe. The status UI separately reports `PRESENCE CONFIRMED` only after actual non-local HTTP/SSDP traffic is observed.
-
-
-## Alpha 3 H — live audio information
-
-The SACD DLNA Status panel now shows the active music title/artist/album, source and output formats, source/output file size, DSD/PCM sample rate, channels and bit depth, effective network speed in x-realtime, and the active processing pipeline. The conversion label distinguishes native DSD (`NO CONVERSION`), SACD ISO decoding/cache, and DSD Processor output (`DSP OUTPUT / CACHED` or `DSP CONVERTING`).
-
-## Alpha 3 H — live audio diagnostics
-
-The diagnostic UI includes current music metadata, source/output format and size, audio resolution, measured TX speed, x-realtime transmission rate, and explicit native/DSP/SACD conversion states.
-
-### View → SACD DLNA menu hardening — Alpha 3 K
-
-The complete View → SACD DLNA command set was reviewed. Library sharing is now a true toggle, the preferences command opens the dedicated SACD DLNA page directly, and refresh/clear-library/clear-cache actions are available from the same menu. DSD Processor toggling now only re-indexes an already shared/running DLNA library.
-## Alpha 3 N — Windows discovery hardening
-
-Improved Windows UPnP/DLNA discovery compatibility: LAN-interface selection for the advertised LOCATION, DLNA device namespace/description, SSDP service announcements and service-type M-SEARCH responses. Added explicit advertised LOCATION diagnostics. Windows Explorer discovery remains dependent on the Windows SSDP/Function Discovery stack and firewall configuration.
-
+- Everyday usage and settings: `docs/USER_GUIDE.md`, `PREFERENCES_FIELDS.md`
+- Building from source: `BUILD.md`
+- Architecture / how it works internally: `docs/ARCHITECTURE.md`
+- What has and hasn't actually been validated: `docs/VALIDATION_STATUS.md`
+- Full documentation map: `DOCUMENTATION_INDEX.md`

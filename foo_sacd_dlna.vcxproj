@@ -53,7 +53,7 @@
     <ClInclude Include="status.h" />
     <ClInclude Include="library_index.h" />
     <ClInclude Include="client_registry.h" />
-    <ClInclude Include="resource.h" /><ClInclude Include="tooltips.h" /></ItemGroup>
+    <ClInclude Include="resource.h" /><ClInclude Include="tooltips.h" /><ClInclude Include="dsp_bridge.h" /><ClInclude Include="dvd_audio_flac.h" /></ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\libPPUI\libPPUI.vcxproj"><Project>{7729EB82-4069-4414-964B-AD399091A03F}</Project></ProjectReference>
     <ProjectReference Include="..\..\pfc\pfc.vcxproj"><Project>{EBFFFB4E-261D-44D3-B89C-957B31A0BF9C}</Project></ProjectReference>

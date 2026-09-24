@@ -120,12 +120,3 @@ exception: it is always decoded and advertised as `.dsf`/DSD, since the raw
 With **DSD Processor** on, non-DSD formats can instead be converted to DSD
 before serving (same pipeline as SACD ISO uses) - see `DSP_PROCESSOR.md`.
 
-## Build toolchain note
-
-This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
-
-```text
-<SDK root>\<WTL folder>\include
-```
-
-See `BUILD.md`, `BUILD.md` and `BUILD.md` for the complete configuration.

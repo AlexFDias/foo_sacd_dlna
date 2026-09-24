@@ -31,15 +31,6 @@
 | Process DLNA audio through DSD Processor | Runs the installed DSD Processor as a private DLNA-only DSP chain. Result must be DSD. | OFF (native DSD) |
 | Configure DSD Processor... | Opens the installed DSP Processor configuration and saves its preset for DLNA use. | Configure per desired DSD output |
 
-## Build toolchain note
-
-This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
-
-```text
-<SDK root>\<WTL folder>\include
-```
-
-See `BUILD.md`, `BUILD.md` and `BUILD.md` for the complete configuration.
 
 ## Alpha 3 H — live audio information
 

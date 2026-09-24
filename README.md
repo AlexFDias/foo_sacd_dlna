@@ -2,7 +2,7 @@
 
 UPnP/DLNA MediaServer component for foobar2000 with **native DSD** and **DVD-Audio → FLAC** support.
 
-**Tree version:** `0.8-alpha3-u-dvda-flac-libflac`  
+**Tree version:** `1.0.0`  
 **Status:** Alpha / development  
 **SDK:** foobar2000 SDK 2025-03-07  
 **Platform:** Windows / foobar2000 x64
@@ -54,9 +54,11 @@ The component does not resize or manipulate the foobar2000 Preferences host wind
 
 The historical record identifies **Alpha 3 I** as the latest revision explicitly confirmed by the maintainer as compiling and running on Windows Debug x64. Later revisions contain additional source changes and require a fresh Windows/MSVC v142 build before equivalent build validation can be claimed.
 
-The current `0.8-alpha3-u-dvda-flac-libflac` tree should therefore be treated as an **Alpha source tree requiring a fresh build and validation of the exact revision** before release.
+The current `1.0.0` tree should therefore be treated as an **Alpha source tree requiring a fresh build and validation of the exact revision** before release.
 
 T+A SDX 3100 HV validation remains dependent on the exact hardware and firmware under test.
+
+Real-world diagnostic logs from a foobar2000 + T+A SDX + VLC test session (see `docs/VALIDATION_STATUS.md`) show the DVD-Audio → FLAC validation and streaming-timeout logic working correctly; every observed failure traced back to `libFLAC.dll` not being deployed next to `foo_sacd_dlna.dll`, which is now surfaced as a startup Console warning instead of silent per-track `503`s. This is evidence from one test environment, not a substitute for the checklist in `RELEASE_CHECKLIST.md`.
 
 ## Documentation
 
@@ -75,10 +77,4 @@ The tree keeps only current source, build instructions, user/developer documenta
 
 Original project code is released under the MIT License. Third-party dependencies remain under their respective terms.
 
-### v7 Range/stream limiter behavior
-
-A single renderer may use multiple HTTP Range connections during seeking or prefetch. These connections are treated as one logical active stream when they originate from the same already-streaming peer, so the Max Streams limit does not reject a renderer's own seek/prefetch connection with HTTP 503.
-
-## v8 — DVD-Audio decoder priming-chunk fix
-
-DVD-Audio tracks may emit one or more empty/setup PCM decoder runs before the first real block. The FLAC conversion path skips those runs and derives the libFLAC stream format from the first non-empty PCM block; a 64-run guard prevents an infinite loop.
+See `docs/ARCHITECTURE.md` for the DVD-Audio FLAC pipeline, cache-availability, media-diagnostics and stream-limiter implementation notes, and `CHANGELOG.md` for their revision history.

@@ -53,15 +53,6 @@ Allow the foobar2000 application/component to accept:
 
 The PC and T+A should normally be on the same LAN/VLAN for SSDP discovery.
 
-## Build toolchain note
-
-This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
-
-```text
-<SDK root>\<WTL folder>\include
-```
-
-See `BUILD.md`, `BUILD.md` and `BUILD.md` for the complete configuration.
 
 ## Live UPnP / DLNA network validation
 

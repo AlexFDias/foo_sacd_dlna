@@ -46,12 +46,3 @@ References:
 - https://sourceforge.net/projects/sacddecoder/files/foo_dsd_processor/
 - https://sourceforge.net/projects/sacddecoder/files/foo_input_sacd/
 
-## Build toolchain note
-
-This repository uses **MSVC v142** with the WTL headers from the SDK tree at:
-
-```text
-<SDK root>\<WTL folder>\include
-```
-
-See `BUILD.md`, `BUILD.md` and `BUILD.md` for the complete configuration.

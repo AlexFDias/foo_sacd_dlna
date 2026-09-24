@@ -26,9 +26,23 @@ O projecto inclui:
 
 `third_party/libFLAC/Win64/libFLAC.dll`
 
-O componente carrega esta DLL dinamicamente a partir do directório do próprio `foo_sacd_dlna.dll`. O projecto copia a DLL para `$(OutDir)` no build.
+O componente carrega esta DLL dinamicamente a partir do directório do próprio `foo_sacd_dlna.dll`. O projecto copia a DLL para `$(OutDir)` no build — **mas essa é a pasta de output da compilação, não a pasta de componentes do foobar2000**. Tens de copiar `libFLAC.dll` manualmente para a pasta onde o `foo_sacd_dlna.dll` fica instalado (ver `BUILD.md`, secção 15).
 
 Não são necessários headers FLAC nem uma import library para compilar esta integração.
+
+### Aviso no arranque se a DLL faltar
+
+Este é o passo de instalação mais fácil de esquecer, e esquecê-lo produzia um sintoma enganador: todas as faixas DVD-Audio falhavam silenciosamente, uma a uma, como `HTTP 503` no renderer, sem nada a apontar para a causa até se inspeccionar `network.log`.
+
+`SacdDlnaServer::start()` agora testa, no arranque, se `libFLAC.dll` está mesmo acessível (mesma ordem de pesquisa do `dvd_audio_flac.cpp`: primeiro a pasta do próprio componente, depois o caminho de pesquisa padrão do Windows) e, se não estiver, escreve de imediato na Consola do foobar2000:
+
+```text
+SACD DLNA: libFLAC.dll was not found at "<caminho testado>" -- DVD-Audio to FLAC
+conversion will fail for every track until it is copied there (see FLAC_RUNTIME.md).
+DSD/SACD sharing is not affected.
+```
+
+Isto é apenas um aviso, não bloqueia o arranque: a partilha DSD/SACD continua a funcionar normalmente mesmo sem `libFLAC.dll`, só a conversão DVD-Audio → FLAC fica indisponível até a DLL ser copiada.
 
 ## Configuração
 
@@ -53,4 +67,6 @@ Ficheiros `.partial` e resultados de conversão falhada são removidos. O fichei
 
 ## Estado de validação
 
-A integração foi revista estaticamente nesta árvore, mas requer compilação Windows/MSVC e teste real com uma faixa DVD-Audio. Não declarar a reprodução no T+A SDX 3100 HV como validada até esse teste ser executado.
+A integração foi revista estaticamente nesta árvore; continua a requerer compilação Windows/MSVC própria (não há aqui toolchain Windows). Não declarar a reprodução no T+A SDX 3100 HV como validada apenas com base nisto.
+
+Dito isto, já existe evidência real de campo (`network.log` + diagnóstico VLC de uma sessão com foobar2000 e um renderer T+A, ver `docs/VALIDATION_STATUS.md`): na sessão de teste mais recente disponível, **nenhuma** falha de conversão foi atribuída à validação estrutural do FLAC gerado nem ao timeout de socket (`SO_SNDTIMEO`) — todas as falhas, sem excepção, foram `libFLAC.dll 1.5.x was not found next to foo_sacd_dlna`. Ou seja, o encoder e a validação da cache não mostraram problemas nesse teste; o que faltava era o passo manual de colocar `libFLAC.dll` na pasta de componentes (ver secção acima).

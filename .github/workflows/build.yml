@@ -1,0 +1,133 @@
+# Windows build for foo_sacd_dlna, referenced from BUILD.md section 27
+# ("CI / GitHub Actions") and ROADMAP.md.
+#
+# IMPORTANT -- configuration required before this will actually run:
+#
+# Per BUILD.md, the foobar2000 SDK and the WTL headers are NOT bundled in
+# this repository (their distribution terms are not this project's to
+# redistribute), so CI has to fetch them the same way a human following
+# BUILD.md would. This workflow expects two repository/organization
+# *variables* (Settings -> Secrets and variables -> Actions -> Variables):
+#
+#   FOOBAR2000_SDK_URL   direct .7z/.zip URL for the foobar2000 SDK
+#                        (see https://www.foobar2000.org/SDK for the
+#                        current release; the download link changes with
+#                        every SDK version, so this is not hardcoded here)
+#   WTL_URL              direct .zip URL for a WTL release containing
+#                        include\atlapp.h (e.g. from the WTL SourceForge
+#                        project)
+#
+# If either variable is unset, the "Fetch dependencies" step fails fast
+# with a clear message instead of silently downloading nothing. This is a
+# template: verify both URLs still work before relying on this workflow,
+# and prefer mirroring both archives somewhere stable (e.g. a private
+# release asset) rather than the upstream download page, since SDK/WTL
+# download URLs are not guaranteed stable.
+#
+# This workflow builds and packages the component. It does NOT and cannot
+# validate hardware/renderer behavior -- see HARDWARE_VALIDATION.md and
+# docs/VALIDATION_STATUS.md. A green run here means "BUILD: PASS", nothing
+# about T+A SDX compatibility.
+
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        configuration: [Debug, Release]
+    env:
+      SDK_DIR: ${{ github.workspace }}\..\SDK
+      WTL_DIR: ${{ github.workspace }}\..\WTL
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: foo_sacd_dlna
+
+      - name: Fetch dependencies (foobar2000 SDK + WTL)
+        shell: pwsh
+        run: |
+          $sdkUrl = "${{ vars.FOOBAR2000_SDK_URL }}"
+          $wtlUrl = "${{ vars.WTL_URL }}"
+          if (-not $sdkUrl -or -not $wtlUrl) {
+            Write-Error "FOOBAR2000_SDK_URL and/or WTL_URL repository variables are not set. See the comment at the top of this workflow file for what to configure."
+            exit 1
+          }
+
+          New-Item -ItemType Directory -Force -Path $env:SDK_DIR | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:WTL_DIR | Out-Null
+
+          Invoke-WebRequest -Uri $sdkUrl -OutFile "$env:RUNNER_TEMP\sdk.archive"
+          Invoke-WebRequest -Uri $wtlUrl -OutFile "$env:RUNNER_TEMP\wtl.archive"
+
+          Expand-Archive -Path "$env:RUNNER_TEMP\sdk.archive" -DestinationPath $env:SDK_DIR -Force
+          Expand-Archive -Path "$env:RUNNER_TEMP\wtl.archive" -DestinationPath $env:WTL_DIR -Force
+
+          $atlapp = Get-ChildItem -Path $env:WTL_DIR -Recurse -Filter atlapp.h -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $atlapp) {
+            Write-Error "atlapp.h not found anywhere under the extracted WTL archive -- check WTL_URL."
+            exit 1
+          }
+          $wtlInclude = Split-Path -Parent $atlapp.FullName
+          "WTL_INCLUDE_DIR=$wtlInclude" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check build environment
+        shell: pwsh
+        working-directory: foo_sacd_dlna
+        run: .\tools\check_build_env.ps1 -WtlInclude "$env:WTL_INCLUDE_DIR"
+
+      - name: Build (${{ matrix.configuration }} | x64)
+        shell: pwsh
+        working-directory: foo_sacd_dlna
+        run: .\tools\build.ps1 -Configuration ${{ matrix.configuration }} -Platform x64 -WtlInclude "$env:WTL_INCLUDE_DIR"
+
+      - name: Locate built DLL
+        id: locate
+        shell: pwsh
+        working-directory: foo_sacd_dlna
+        run: |
+          $dll = Get-ChildItem -Recurse -Filter foo_sacd_dlna.dll -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match [regex]::Escape("${{ matrix.configuration }}") } |
+            Select-Object -First 1
+          if (-not $dll) {
+            Write-Error "foo_sacd_dlna.dll was not found in the build output."
+            exit 1
+          }
+          "dll_path=$($dll.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Package (component + libFLAC.dll)
+        shell: pwsh
+        working-directory: foo_sacd_dlna
+        run: |
+          $pkgDir = "$env:RUNNER_TEMP\package"
+          New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
+          Copy-Item "${{ steps.locate.outputs.dll_path }}" -Destination $pkgDir
+          # See FLAC_RUNTIME.md / BUILD.md section 15: libFLAC.dll MUST ship
+          # alongside foo_sacd_dlna.dll, or DVD-Audio -> FLAC fails for
+          # every track at runtime.
+          Copy-Item "third_party\libFLAC\Win64\libFLAC.dll" -Destination $pkgDir
+          "PACKAGE_DIR=$pkgDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foo_sacd_dlna-${{ matrix.configuration }}-x64
+          path: ${{ env.PACKAGE_DIR }}
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          "BUILD: PASS (${{ matrix.configuration }}|x64)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "ARTIFACT: foo_sacd_dlna-${{ matrix.configuration }}-x64" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "HARDWARE VALIDATION: NOT RUN (see HARDWARE_VALIDATION.md)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append

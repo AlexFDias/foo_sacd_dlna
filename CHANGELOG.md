@@ -1,3 +1,38 @@
+# foo_sacd_dlna — Changelog
+
+Newest changes first. Superseded revision-by-revision build/audit notes have been consolidated; see `docs/VALIDATION_STATUS.md` for what is and isn't actually build/hardware-validated.
+
+## 1.0.0 — first consolidated release
+
+Everything below this entry (the `Alpha 3 *` line, and the DVD-Audio FLAC `v6`–`v10` line) was iterative work on the same codebase. This release does not add a feature; it is the point where all of that work was reconciled into one internally-consistent tree:
+
+- The version actually declared to foobar2000 (`DECLARE_COMPONENT_VERSION` in `main.cpp`) and the version advertised over the network in UPnP `modelNumber` / SSDP `SERVER` headers (`kVersion` in `dlna_server.cpp`) were both still `"0.8 alpha 3 U"` / a stale `v8` string, even though `v9` and `v10` code had already landed. Both now read `1.0.0`, matching `VERSION` and every doc.
+- `docs/ARCHITECTURE.md` and `docs/DOCUMENTACAO.pt-PT.md` described DVD-Audio FLAC frames as fixed-layout "verbatim subframes" written by a local encoder — a description of the writer this project replaced several revisions ago. Corrected to describe the real libFLAC 1.5.x encoder (CONSTANT/FIXED/LPC subframes, chosen by libFLAC itself).
+- `docs/DOCUMENTACAO.pt-PT.md` had two separate, contradictory descriptions of the DVD-Audio FLAC path (one correct, one describing the old writer) in the same file. Merged into one.
+- `HELP.md` was a verbatim, mistitled copy of `NETWORK_REQUIREMENTS.md`. Rewritten as its own quick-help/FAQ page.
+- Nine files referenced `BUILD.md` three times in a row ("See `BUILD.md`, `BUILD.md` and `BUILD.md`"), a leftover templating bug. Fixed to a real, specific pointer.
+- Six documents (`BUILD.md`, `HARDWARE_VALIDATION.md`, `EXAMPLES.md`, `NETWORK_REQUIREMENTS.md`, `PROTOCOL_COMPATIBILITY.md`, and this changelog) referenced `tools/dlna_smoke_test.py`, `tools/ta_sdx_probe.py`, `tools/dlna_protocol_report.py`, `tools/check_build_env.ps1` and `tools/build.ps1`, and `ROADMAP.md` claimed a GitHub Actions build was "done" — none of these files existed anywhere in the tree. All five scripts and `.github/workflows/build.yml` now exist and match the documented CLI usage (the CI workflow additionally needs `FOOBAR2000_SDK_URL`/`WTL_URL` repo variables set before it can run, since the SDK and WTL are not redistributed in this repository).
+- `BUILD.md` had no DVD-Audio/FLAC test step at all, despite that being a full third of the component's feature set; added as section 15, including the `libFLAC.dll` deployment step and `flac.exe -t` / `metaflac.exe --list` verification.
+- `foo_sacd_dlna.vcxproj` was missing `dsp_bridge.h` and `dvd_audio_flac.h` from its `ClInclude` list (harmless to the build, but invisible in Solution Explorer and to tooling that enumerates the project from the `.vcxproj`). Added.
+- `tests/client_registry_selftest/` and `tests/shared_formats_selftest/` had no `README.md`, unlike the other three self-test directories. Added.
+- Several `BUILD.md`/`RELEASE_CHECKLIST.md` sections carried per-revision "Alpha 3 G/J/I/P/Q" notes that duplicated (and in places pre-dated) the same history already in this changelog, including notes about an MSBuild WTL-discovery bug that `WTL.props` already fixes. Consolidated: this changelog is now the single source of truth for revision history; the build/checklist docs describe only the current state.
+- `README.md`, `README.pt-PT.md`, `docs/DOCUMENTATION.md` and `docs/DEVELOPER_GUIDE.md` each carried their own copy of the same five implementation-detail paragraphs (DVD-Audio cache availability, HTTP diagnostics, PCM authoritative format, the `v7` range/stream-limiter note, the `v8` priming-chunk note). Consolidated into `docs/ARCHITECTURE.md`; the other files now point to it instead of repeating it.
+
+None of this changes behavior — it makes what the code actually does match what the documentation says it does, in both languages. See `docs/VALIDATION_STATUS.md` for what "1.0.0" does and does not claim about build/hardware validation.
+
+## v10 — startup libFLAC.dll check
+
+- `SacdDlnaServer::start()` now probes whether `libFLAC.dll` is actually loadable (same search order as `dvd_audio_flac.cpp`: component directory first, then the default search path) and, if not, writes a one-time warning to the foobar2000 Console naming the exact path it tried.
+- Non-fatal: DSD/SACD sharing is unaffected. Without this, a missing `libFLAC.dll` only showed up as per-track `503 DVDA_CACHE_FAILED` responses on the renderer, which a real test session showed took days to trace back to a missing file (see `docs/VALIDATION_STATUS.md`).
+- Documentation updated in `FLAC_RUNTIME.md`, `BUILD.md` (new DVD-Audio/FLAC test step) and `docs/ARCHITECTURE.md` to make the `libFLAC.dll` deployment step explicit.
+
+## v9 — streaming send timeout (`SO_SNDTIMEO`)
+
+- `serveMedia()` now sets a 15-second `SO_SNDTIMEO` on the client socket before writing any response, including a `503`.
+- Rationale: without a send timeout, a `send()` call can block inside the OS kernel for minutes when a renderer disappears mid-response without a clean close — which happens on essentially every track skip, since VLC/UPnP renderers routinely abandon the HTTP connection for the track they just left. A worker thread stuck in that `send()` keeps holding its `StreamSlot`, so with the default "Max streams" limit of 2, two abandoned connections in a row are enough to occupy every slot and make the server answer `503` to unrelated tracks until the stuck sends eventually time out on their own.
+- With the timeout in place, a stuck `send()` fails promptly instead, so the `StreamSlot` destructor — and the "Max streams" slot it releases — always runs quickly.
+- A real test session's `network.log` shows only a handful of `stream failed: socket send failed` events against a T+A hardware renderer, consistent with this being the intended abandoned-connection path rather than a bug; see `docs/VALIDATION_STATUS.md`.
+
 ## v8 — DVD-Audio decoder priming-chunk fix
 
 - DVD-Audio conversion now skips empty/format-only PCM decoder runs and uses the first non-empty PCM block to configure libFLAC.
@@ -57,7 +92,7 @@
 - Kept DIDL-Lite and HTTP FLAC profile metadata consistent.
 - Preserved Range/206 and application read-ahead handling.
 
-# Current tree — 0.8-alpha3-u-dvda-flac-libflac
+# Current tree — 1.0.0
 
 - Replaced the hand-written DVD-Audio FLAC frame writer with the official Xiph libFLAC 1.5.x runtime encoder.
 - Removed frame-level FLAC validation that assumed the old writer's fixed-block/verbatim layout. Validation now checks the native `fLaC` signature, metadata chain, STREAMINFO and frame start without duplicating FLAC encoding logic.

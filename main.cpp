@@ -2,8 +2,8 @@
 
 DECLARE_COMPONENT_VERSION(
     "SACD DLNA Server",
-    "0.8 alpha 3 U",
-    "Native DSD / DVD-Audio UPnP/DLNA Media Server for foobar2000. Uses foo_input_sacd for SACD ISO and foo_input_dvda for DVD-Audio, serving DVD-Audio tracks as cached lossless FLAC."
+    "1.0.0",
+    "Native DSD / DVD-Audio UPnP/DLNA Media Server for foobar2000. Uses foo_input_sacd for SACD ISO and foo_input_dvda for DVD-Audio, serving DVD-Audio tracks as cached lossless FLAC via the official libFLAC 1.5.x encoder."
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_sacd_dlna.dll");
