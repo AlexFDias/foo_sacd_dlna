@@ -20,6 +20,7 @@
 |---|---|
 | `CHANGELOG.md` | histórico consolidado de alterações |
 | `INSTALL.md` / `INSTALL.pt-PT.md` | instalar um componente já compilado |
+| `HELP.md` / `HELP.pt-PT.md` | ajuda rápida / FAQ |
 | `BUILD.md` | preparação e compilação Windows/MSVC/WTL (Inglês) |
 | `BUILD.pt-PT.md` | o mesmo, em Português |
 | `RELEASE_CHECKLIST.md` | checklist de release/validação |

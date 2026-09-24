@@ -73,4 +73,4 @@ Para actualizar para um build mais recente: fecha o foobar2000, substitui o `foo
 
 ## Alguma coisa não está a funcionar?
 
-Ver `HELP.md` para os problemas mais comuns (o do `libFLAC.dll` acima é de longe o mais frequente) e `docs/USER_GUIDE.md` para o uso diário depois de estar a funcionar.
+Ver `HELP.pt-PT.md` para os problemas mais comuns (o do `libFLAC.dll` acima é de longe o mais frequente) e `docs/USER_GUIDE.md` para o uso diário depois de estar a funcionar.

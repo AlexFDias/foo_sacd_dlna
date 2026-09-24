@@ -1,6 +1,8 @@
 # foo_sacd_dlna — Quick Help / FAQ
 
-This is a short, task-oriented help page. For full detail see `docs/USER_GUIDE.md` (usage), `BUILD.md` (compiling), and `DOCUMENTATION_INDEX.md` (everything else).
+Para a versão em Português de Portugal, ver `HELP.pt-PT.md`.
+
+This is a short, task-oriented help page. For full detail see `docs/USER_GUIDE.md` (usage), `INSTALL.md` (installing), `BUILD.md` (compiling), and `DOCUMENTATION_INDEX.md` (everything else).
 
 ## What this component does
 
